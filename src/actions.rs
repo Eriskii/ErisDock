@@ -26,7 +26,9 @@ pub fn open(app: &NSRunningApplication) {
 pub fn hide_others(app: &NSRunningApplication) {
     let pid = app.processIdentifier();
     for other in NSWorkspace::sharedWorkspace().runningApplications().iter() {
-        if other.activationPolicy() == objc2_app_kit::NSApplicationActivationPolicy::Regular && other.processIdentifier() != pid {
+        if other.activationPolicy() == objc2_app_kit::NSApplicationActivationPolicy::Regular
+            && other.processIdentifier() != pid
+        {
             other.hide();
         }
     }
@@ -173,7 +175,9 @@ fn string_attribute(element: &AXUIElement, name: &'static str) -> Option<String>
 }
 
 fn bool_attribute(element: &AXUIElement, name: &'static str) -> bool {
-    attribute(element, name).and_then(|value| value.downcast_ref::<CFBoolean>().map(CFBoolean::as_bool)).unwrap_or(false)
+    attribute(element, name)
+        .and_then(|value| value.downcast_ref::<CFBoolean>().map(CFBoolean::as_bool))
+        .unwrap_or(false)
 }
 
 pub struct LoginItem;

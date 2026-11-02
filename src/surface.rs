@@ -107,8 +107,11 @@ impl Surface {
         root.addSublayer(&label);
 
         let mut surface = Self {
-            rise: Spring::new(0.0, settings.rise_response, settings.rise_damping),
-            spread: Spring::new(0.0, settings.spread_response, settings.spread_damping),
+            rise: settings.animation.rise.spring(0.0),
+            spread: settings.animation.spread.spring(0.0),
+            label_shown: settings.animation.label.spring(0.0),
+            label_x: settings.animation.label_move.spring(0.0).with_epsilon(0.05),
+            label_width: settings.animation.label_move.spring(0.0).with_epsilon(0.05),
             settings,
             items: Vec::new(),
             hovered: None,
@@ -122,9 +125,6 @@ impl Surface {
             label,
             label_text,
             label_name: String::new(),
-            label_shown: Spring::new(0.0, 0.24, 0.8),
-            label_x: Spring::new(0.0, 0.32, 0.82).with_epsilon(0.05),
-            label_width: Spring::new(0.0, 0.32, 0.82).with_epsilon(0.05),
             white,
         };
         surface.set_scale(scale);
@@ -151,16 +151,51 @@ impl Surface {
     }
 
     pub fn set_risen(&mut self, risen: bool) {
-        let s = &self.settings;
+        let a = &self.settings.animation;
         if risen {
-            self.rise.animate_with(1.0, s.rise_response, s.rise_damping);
-            self.spread.animate_with(1.0, s.spread_response, s.spread_damping);
+            self.rise.animate_spec(1.0, a.rise);
+            self.spread.animate_spec(1.0, a.spread);
         } else {
             // Aimed a little past the edge, so it closes instead of creeping the last pixel
             // shut; `step` stops it at 0.
-            self.rise.animate_with(-0.08, 0.3, 0.92);
-            self.spread.animate_with(0.0, 0.34, 1.0);
+            self.rise.animate_spec(-0.08, a.tuck);
+            self.spread.animate_spec(0.0, a.tuck_spread);
         }
+    }
+
+    pub fn is_risen(&self) -> bool {
+        self.rise.target > 0.0
+    }
+
+    /// Takes on new settings: new sizes at once, new animations from wherever things are.
+    pub fn apply(&mut self, settings: Settings) {
+        let resized = settings.icon_size != self.settings.icon_size;
+        self.settings = settings;
+        let a = self.settings.animation;
+        self.label_shown.retune(a.label);
+        self.label_x.retune(a.label_move);
+        self.label_width.retune(a.label_move);
+        if self.is_risen() {
+            self.set_risen(true);
+        }
+        let side = self.icon_pixels();
+        for item in &mut self.items {
+            item.hover.retune(a.hover);
+            item.press.retune(a.press);
+            item.active.retune(a.active);
+            item.appear.retune(if item.leaving { a.leave } else { a.appear });
+            if resized {
+                let size = self.settings.icon_size;
+                item.icon.setBounds(CGRect::new(CGPoint::ZERO, CGSize::new(size, size)));
+                set_icon(&item.icon, &item.app, side);
+            }
+        }
+    }
+
+    /// Icons are drawn larger than they sit, so they stay sharp while hovered, at the densest
+    /// screen's scale.
+    fn icon_pixels(&self) -> usize {
+        (self.settings.icon_size * 1.3 * max_backing_scale()).ceil() as usize
     }
 
     /// Starts the next rise over from the edge.
@@ -189,7 +224,7 @@ impl Surface {
         for item in &mut self.items {
             if !item.leaving && !live.contains(&item.pid) {
                 item.leaving = true;
-                item.appear.animate_with(0.0, 0.3, 1.0);
+                item.appear.animate_spec(0.0, self.settings.animation.leave);
             }
         }
         if self.hovered.is_some_and(|pid| !live.contains(&pid)) {
@@ -220,16 +255,12 @@ impl Surface {
         icon.setBounds(CGRect::new(CGPoint::ZERO, CGSize::new(size, size)));
         icon.setContentsGravity(unsafe { kCAGravityResizeAspect });
         icon.setMinificationFilter(unsafe { kCAFilterTrilinear });
-        // Drawn larger than it sits, so it stays sharp while hovered, at the densest screen's scale.
-        let side = (size * 1.3 * max_backing_scale()).ceil() as usize;
-        if let Some(image) = app.icon().and_then(|image| rasterize(&image, side)) {
-            // SAFETY: a CGImage is valid layer contents.
-            unsafe { icon.setContents(Some(cf_object(&image))) };
-        }
+        set_icon(&icon, &app, self.icon_pixels());
         let dot = CALayer::new();
         dot.setBackgroundColor(Some(&self.white));
         dot.setContentsScale(self.scale);
-        let mut appear = Spring::new(0.0, 0.42, 0.6);
+        let a = &self.settings.animation;
+        let mut appear = a.appear.spring(0.0);
         appear.animate(1.0);
         Item {
             pid: app.processIdentifier(),
@@ -238,9 +269,9 @@ impl Surface {
             icon,
             dot,
             appear,
-            hover: Spring::new(0.0, 0.3, 0.55),
-            press: Spring::new(0.0, 0.16, 0.5),
-            active: Spring::new(0.0, 0.3, 0.75),
+            hover: a.hover.spring(0.0),
+            press: a.press.spring(0.0),
+            active: a.active.spring(0.0),
             leaving: false,
             center: 0.0,
             hit: CGRect::ZERO,
@@ -248,7 +279,9 @@ impl Surface {
     }
 
     pub fn step(&mut self, dt: f64) {
-        for spring in [&mut self.rise, &mut self.spread, &mut self.label_shown, &mut self.label_x, &mut self.label_width] {
+        for spring in
+            [&mut self.rise, &mut self.spread, &mut self.label_shown, &mut self.label_x, &mut self.label_width]
+        {
             spring.step(dt);
         }
         if self.rise.target < 0.0 && self.rise.value <= 0.0 {
@@ -339,10 +372,8 @@ impl Surface {
         self.label.setOpacity(shown.clamp(0.0, 1.0) as f32);
         let scale = 0.85 + 0.15 * shown;
         self.label.setTransform(CATransform3D::new_scale(scale, scale, 1.0));
-        self.label_text.setFrame(CGRect::new(
-            CGPoint::new(8.0, (side - line) / 2.0),
-            CGSize::new((width - 16.0).max(0.0), line),
-        ));
+        self.label_text
+            .setFrame(CGRect::new(CGPoint::new(8.0, (side - line) / 2.0), CGSize::new((width - 16.0).max(0.0), line)));
     }
 
     fn live_item(&self, pid: i32) -> Option<&Item> {
@@ -427,13 +458,28 @@ fn max_backing_scale() -> f64 {
         .unwrap_or(2.0)
 }
 
+fn set_icon(layer: &CALayer, app: &NSRunningApplication, side: usize) {
+    if let Some(image) = app.icon().and_then(|image| rasterize(&image, side)) {
+        // SAFETY: a CGImage is valid layer contents.
+        unsafe { layer.setContents(Some(cf_object(&image))) };
+    }
+}
+
 /// Draws `image` into a square bitmap `side` pixels across, letting NSImage pick its best
 /// representation for that size.
 fn rasterize(image: &NSImage, side: usize) -> Option<CFRetained<CGImage>> {
     let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))?;
     // SAFETY: a null data pointer has the context allocate its own memory.
     let context = unsafe {
-        CGBitmapContextCreate(std::ptr::null_mut(), side, side, 8, 0, Some(&space), CGImageAlphaInfo::PremultipliedLast.0)
+        CGBitmapContextCreate(
+            std::ptr::null_mut(),
+            side,
+            side,
+            8,
+            0,
+            Some(&space),
+            CGImageAlphaInfo::PremultipliedLast.0,
+        )
     }?;
     let graphics = NSGraphicsContext::graphicsContextWithCGContext_flipped(&context, false);
     NSGraphicsContext::saveGraphicsState_class();

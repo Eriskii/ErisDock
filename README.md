@@ -6,9 +6,8 @@ glass. It shows the apps that are running, as the native Dock does, and tucks ba
 once the pointer leaves. Rust, on AppKit and Core Animation through the `objc2` crates.
 
 - **Rising**: rest the pointer on the bottom edge of a screen, within reach of where the dock
-  sits there, and it rises on that screen. It grows out of the edge as a shallow bump, rising
-  faster than it widens, so it stretches up narrow, overshoots, and settles out to its full
-  width. Its top corners are rounded and its foot flares into the edge through concave fillets,
+  sits there, and it rises on that screen, growing out of the edge as a shallow bump, in one of
+  three sets of animations (see *Settings*). Its top corners are rounded and its foot flares into the edge through concave fillets,
   all with Figma's corner smoothing. Icons ride up with its top edge and fade in on the way. It
   stays up while the pointer is near and tucks away shortly after it leaves. An edge another
   screen carries on below doesn't raise it.
@@ -17,13 +16,13 @@ once the pointer leaves. Rust, on AppKit and Core Animation through the `objc2` 
   neighbours closing over. Each running app has a dot beneath it, which stretches into a bar
   under the frontmost app; hidden apps are dimmed. Pointing at an icon lifts it out of the dock
   and shows the app's name above it.
-- **Clicking** an icon squashes it and brings its app forward as the native Dock does: unhidden,
+- **Clicking** an icon presses it in and brings its app forward as the native Dock does: unhidden,
   active, and asked to reopen, so an app with no windows open makes one.
-- **Menus**, on right-click or Control-click, after the native Dock's: the app's windows (a ◆
+- **Menus**, on right-click or Control-click, open just above the icon, after the native Dock's: the app's windows (a ◆
   for minimized ones; choosing one brings it forward), **Options › Show in Finder**, **Show All
   Windows** (App Exposé), **Hide** and **Quit**, which Option turns into **Hide Others** and
   **Force Quit**. Finder's has **New Finder Window** and no Quit. Right-clicking the dock between
-  icons offers **Open at Login** and **Quit ErisDock**.
+  icons offers **Settings…**, **Open at Login** and **Quit ErisDock**.
 
 The window list needs ErisDock allowed under System Settings › Privacy & Security ›
 Accessibility; until it is, menus offer **Allow Window List…** in its place. Show All Windows asks
@@ -41,9 +40,10 @@ scripts/native-dock.sh hide   # keeps the native Dock out of the way
 to the signature, so each rebuild has to be allowed again; `ERISDOCK_SIGN=<identity>` signs it
 with a lasting identity instead.
 
-`cargo test` checks the springs, the outline and the layout. `cargo run -- --snapshot dock.png`
-draws the dock rising, hovered, pressed and tucking away, frame by frame, into one PNG, with the
-apps that are running, without putting anything on screen.
+`cargo test` checks the springs, the outline, the layout, the animation sets and the config
+file. `cargo run -- --snapshot dock.png [--style squishy]` draws the dock rising, hovered,
+pressed and tucking away, frame by frame, into one PNG, with the apps that are running, without
+putting anything on screen.
 
 ## The native Dock
 
@@ -53,22 +53,25 @@ minutes), so it never comes up under the pointer. `restore` puts its usual delay
 
 ## Settings
 
-Sizes scale from the icon size, which is the native Dock's own (`tilesize`) unless set. Any of
-these can be set with `defaults write com.eriskii.ErisDock <key> -float <value>` and are read at
-launch:
+**Settings…**, from right-clicking the dock between icons (or opening ErisDock again while
+it runs), opens a small window holding the dock up beside it, so each change shows as it's
+made: the animation, the icon size, corner smoothing, how long the pointer rests on the edge
+before the dock rises and how long it's away before the dock tucks back in, and opening at
+login. **Replay Animation** tucks the dock away and raises it again.
 
-| Key | Default | |
-| --- | --- | --- |
-| `iconSize` | the native Dock's | |
-| `spacing`, `padding` | 0.18, 0.26 × icon | between icons; between the outer icons and the sides |
-| `topPadding`, `bottomPadding`, `dotSize` | 0.2 × icon; that + dot + 2; 0.08 × icon | |
-| `cornerRadius`, `flareRadius` | 0.46, 0.26 × icon | the top corners; the fillets at the foot |
-| `smoothing` | 0.6 | corner smoothing, 0 for circular corners |
-| `collapsedWidth` | 0.45 | the width it rises from, as a fraction of its full width |
-| `riseResponse`, `riseDamping` | 0.42, 0.58 | the rise's spring: period in seconds, damping fraction |
-| `spreadResponse`, `spreadDamping` | 0.5, 0.62 | the widening's spring |
-| `revealDelay`, `hideDelay` | 0.06, 0.35 | seconds on the edge before it rises; away before it tucks in |
-| `triggerMargin` | 48 | how far beside the dock the edge still raises it |
+Everything is kept in `~/.config/erisdock/config.toml` (or under `$XDG_CONFIG_HOME`), written
+the first time ErisDock runs with every setting described and the defaults commented out.
+ErisDock picks up changes to it as soon as it's saved; the window writes into it and keeps its
+comments. Sizes left out scale with the icon size, which is the native Dock's own unless set.
+
+The animations come as sets:
+
+- **Expressive** (the default): Material 3 Expressive's springs. The dock rises and widens
+  together, quick and direct, with a little give as it lands; icons pop in with a small
+  bounce and shrink slightly when pressed.
+- **Squishy**: the first version's. The dock rises before it widens, overshooting tall and
+  narrow and then wide, and pressed icons squash flat.
+- **Standard**: Material 3's standard springs, straight up and out with no bounce.
 
 ## License
 

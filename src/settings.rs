@@ -1,10 +1,15 @@
 use objc2::AnyThread;
-use objc2_foundation::{NSString, NSUserDefaults, ns_string};
+use objc2_foundation::{NSUserDefaults, ns_string};
 
-/// Sizes and timings. Sizes scale from the icon size, which is the native Dock's unless set;
-/// any of them can be set with `defaults write com.eriskii.ErisDock <key> -float <value>`.
+use crate::animation::{Animation, Style};
+use crate::config::Config;
+
+/// Sizes, timings and animations, worked out from the config file. Sizes scale from the icon
+/// size, which is the native Dock's unless the config sets one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
+    pub style: Style,
+    pub animation: Animation,
     pub icon_size: f64,
     /// Between neighbouring icons.
     pub spacing: f64,
@@ -19,13 +24,6 @@ pub struct Settings {
     pub flare_radius: f64,
     /// Figma's corner smoothing, 0 for circular corners.
     pub smoothing: f64,
-    /// The body's width, as a fraction of its full width, while it's tucked into the edge.
-    /// It rises faster than it widens, which is the squish.
-    pub collapsed_width: f64,
-    pub rise_response: f64,
-    pub rise_damping: f64,
-    pub spread_response: f64,
-    pub spread_damping: f64,
     /// How long the pointer rests on the edge before the dock rises.
     pub reveal_delay: f64,
     /// How long the pointer stays away before the dock tucks back in.
@@ -35,28 +33,44 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub const DEFAULT_ICON_SIZE: f64 = 48.0;
+    pub const DEFAULT_SMOOTHING: f64 = 0.6;
+    pub const DEFAULT_REVEAL_DELAY: f64 = 0.06;
+    pub const DEFAULT_HIDE_DELAY: f64 = 0.35;
+
+    #[cfg(test)]
     pub fn with_icon_size(icon_size: f64) -> Self {
-        let top_padding = (icon_size * 0.2).round();
-        let dot_size = (icon_size * 0.08).round().max(3.0);
+        Self::from_config(&Config { icon_size: Some(icon_size), ..Config::default() }, None)
+    }
+
+    /// `native_icon_size` is the native Dock's, used when the config doesn't set one.
+    pub fn from_config(config: &Config, native_icon_size: Option<f64>) -> Self {
+        let icon_size = config.icon_size.or(native_icon_size).unwrap_or(Self::DEFAULT_ICON_SIZE).clamp(16.0, 256.0);
+        let top_padding = config.top_padding.unwrap_or((icon_size * 0.2).round());
+        let dot_size = config.dot_size.unwrap_or((icon_size * 0.08).round().max(3.0));
         Self {
+            style: config.animation,
+            animation: config.animation.animation(),
             icon_size,
-            spacing: (icon_size * 0.18).round(),
-            padding: (icon_size * 0.26).round(),
+            spacing: config.spacing.unwrap_or((icon_size * 0.18).round()),
+            padding: config.padding.unwrap_or((icon_size * 0.26).round()),
             top_padding,
-            bottom_padding: top_padding + dot_size + 2.0,
+            bottom_padding: config.bottom_padding.unwrap_or(top_padding + dot_size + 2.0),
             dot_size,
-            corner_radius: icon_size * 0.46,
-            flare_radius: icon_size * 0.26,
-            smoothing: 0.6,
-            collapsed_width: 0.45,
-            rise_response: 0.42,
-            rise_damping: 0.58,
-            spread_response: 0.5,
-            spread_damping: 0.62,
-            reveal_delay: 0.06,
-            hide_delay: 0.35,
-            trigger_margin: 48.0,
+            corner_radius: config.corner_radius.unwrap_or(icon_size * 0.46),
+            flare_radius: config.flare_radius.unwrap_or(icon_size * 0.26),
+            smoothing: config.smoothing.unwrap_or(Self::DEFAULT_SMOOTHING).clamp(0.0, 1.0),
+            reveal_delay: config.reveal_delay.unwrap_or(Self::DEFAULT_REVEAL_DELAY).max(0.0),
+            hide_delay: config.hide_delay.unwrap_or(Self::DEFAULT_HIDE_DELAY).max(0.0),
+            trigger_margin: config.trigger_margin.unwrap_or(48.0).max(0.0),
         }
+    }
+
+    /// The native Dock's icon size, its `tilesize`.
+    pub fn native_icon_size() -> Option<f64> {
+        NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(ns_string!("com.apple.dock")))
+            .map(|dock| dock.doubleForKey(ns_string!("tilesize")))
+            .filter(|size| *size > 0.0)
     }
 
     /// The body's height once risen.
@@ -69,40 +83,24 @@ impl Settings {
         let count = count as f64;
         count * (self.icon_size + self.spacing) - if count > 0.0 { self.spacing } else { 0.0 } + 2.0 * self.padding
     }
+}
 
-    pub fn load() -> Self {
-        let defaults = NSUserDefaults::standardUserDefaults();
-        let read = |key: &str| {
-            let key = NSString::from_str(key);
-            defaults.objectForKey(&key).map(|_| defaults.doubleForKey(&key))
-        };
-        let native = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(ns_string!("com.apple.dock")))
-            .map(|dock| dock.doubleForKey(ns_string!("tilesize")))
-            .filter(|size| *size > 0.0);
-        let mut settings = Self::with_icon_size(read("iconSize").or(native).unwrap_or(48.0));
-        let keys: [(&str, &mut f64); 16] = [
-            ("spacing", &mut settings.spacing),
-            ("padding", &mut settings.padding),
-            ("topPadding", &mut settings.top_padding),
-            ("bottomPadding", &mut settings.bottom_padding),
-            ("dotSize", &mut settings.dot_size),
-            ("cornerRadius", &mut settings.corner_radius),
-            ("flareRadius", &mut settings.flare_radius),
-            ("smoothing", &mut settings.smoothing),
-            ("collapsedWidth", &mut settings.collapsed_width),
-            ("riseResponse", &mut settings.rise_response),
-            ("riseDamping", &mut settings.rise_damping),
-            ("spreadResponse", &mut settings.spread_response),
-            ("spreadDamping", &mut settings.spread_damping),
-            ("revealDelay", &mut settings.reveal_delay),
-            ("hideDelay", &mut settings.hide_delay),
-            ("triggerMargin", &mut settings.trigger_margin),
-        ];
-        for (key, field) in keys {
-            if let Some(value) = read(key) {
-                *field = value;
-            }
-        }
-        settings
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_follow_the_icon_unless_set() {
+        let config = Config { icon_size: Some(50.0), spacing: Some(3.0), ..Config::default() };
+        let settings = Settings::from_config(&config, Some(30.0));
+        assert_eq!(settings.icon_size, 50.0);
+        assert_eq!(settings.spacing, 3.0);
+        assert_eq!(settings.padding, 13.0);
+    }
+
+    #[test]
+    fn the_native_dock_sets_the_icon_size_when_the_config_does_not() {
+        assert_eq!(Settings::from_config(&Config::default(), Some(30.0)).icon_size, 30.0);
+        assert_eq!(Settings::from_config(&Config::default(), None).icon_size, Settings::DEFAULT_ICON_SIZE);
     }
 }

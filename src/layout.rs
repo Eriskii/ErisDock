@@ -29,7 +29,13 @@ pub struct Placement {
 
 /// Lays the dock out for a frame: the body from how far it has risen and spread, and each
 /// icon in it from its own springs.
-pub fn place(settings: &Settings, mid_x: f64, rise: f64, spread: f64, motions: &[Motion]) -> (DockShape, Vec<Placement>) {
+pub fn place(
+    settings: &Settings,
+    mid_x: f64,
+    rise: f64,
+    spread: f64,
+    motions: &[Motion],
+) -> (DockShape, Vec<Placement>) {
     let s = settings;
     let slot = s.icon_size + s.spacing;
     let appears: Vec<f64> = motions.iter().map(|m| m.appear.max(0.0)).collect();
@@ -37,7 +43,8 @@ pub fn place(settings: &Settings, mid_x: f64, rise: f64, spread: f64, motions: &
     let total: f64 = appears.iter().sum();
     let content_width = (total * slot - s.spacing * total.min(1.0)).max(0.0);
     // The row squeezes with the body, icons and all, so they never stick out of its sides.
-    let pinch = s.collapsed_width + (1.0 - s.collapsed_width) * spread;
+    let a = &s.animation;
+    let pinch = a.collapsed_width + (1.0 - a.collapsed_width) * spread;
     let height = s.height() * rise.max(0.0);
     let shape = DockShape {
         mid_x,
@@ -58,18 +65,15 @@ pub fn place(settings: &Settings, mid_x: f64, rise: f64, spread: f64, motions: &
             let center = mid_x + (x + s.icon_size * appear / 2.0 - mid_x) * pinch;
             x += appear * slot;
             let size = appear * pinch;
-            let grow = size * (1.0 + 0.12 * m.hover);
+            let grow = size * (1.0 + a.hover_scale * m.hover);
             let fade = appear.min(1.0) * reveal;
             Placement {
                 center,
-                hit: CGRect::new(
-                    CGPoint::new(center - slot * size / 2.0, 0.0),
-                    CGSize::new(slot * size, height),
-                ),
+                hit: CGRect::new(CGPoint::new(center - slot * size / 2.0, 0.0), CGSize::new(slot * size, height)),
                 // The icon's top rides the body's top edge; hovering lifts it and grows it out of
-                // the body, and pressing squashes it onto its foot.
-                icon_base: CGPoint::new(center, height - s.top_padding - s.icon_size * size + 4.0 * m.hover),
-                icon_scale: (grow * (1.0 + 0.1 * m.press), grow * (1.0 - 0.16 * m.press)),
+                // the body, and pressing squashes or shrinks it onto its foot.
+                icon_base: CGPoint::new(center, height - s.top_padding - s.icon_size * size + a.hover_lift * m.hover),
+                icon_scale: (grow * (1.0 + a.press_scale.0 * m.press), grow * (1.0 + a.press_scale.1 * m.press)),
                 dot_position: CGPoint::new(center, height - s.height() + s.bottom_padding * 0.4),
                 dot_width: s.dot_size * (1.0 + 2.5 * m.active) * pinch,
                 dot_opacity: fade * (0.45 + 0.55 * m.active),
@@ -119,6 +123,8 @@ mod tests {
     #[test]
     fn while_pinched_the_icons_stay_within_the_body() {
         let s = Settings::with_icon_size(48.0);
+        let mut s = s;
+        s.animation = crate::animation::Style::Squishy.animation();
         for spread in [0.0, 0.3, 0.7] {
             let (shape, items) = place(&s, 400.0, 0.8, spread, &settled(8));
             let body = shape.body_rect();

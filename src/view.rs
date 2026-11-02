@@ -6,12 +6,12 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSEvent, NSEventModifierFlags, NSPanel, NSResponder, NSView, NSWindow,
-    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSApplicationDelegate, NSBackingStoreType, NSColor, NSEvent, NSEventModifierFlags, NSPanel,
+    NSResponder, NSView, NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::CGPoint;
 use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
-use objc2_foundation::{NSObject, NSRect, NSString};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSRect, NSString};
 use objc2_quartz_core::{CADisplayLink, CALayer};
 
 use crate::dock::Dock;
@@ -182,6 +182,32 @@ define_class!(
 );
 
 impl AppsObserver {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(DockLink::default());
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+define_class!(
+    /// Opening ErisDock again, from Spotlight or Finder, while it's running opens its settings.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErisDockAppDelegate"]
+    #[ivars = DockLink]
+    pub struct AppDelegate;
+
+    unsafe impl NSObjectProtocol for AppDelegate {}
+
+    unsafe impl NSApplicationDelegate for AppDelegate {
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn reopen(&self, _app: &NSApplication, _has_visible_windows: bool) -> bool {
+            self.ivars().with(|dock| dock.open_settings());
+            false
+        }
+    }
+);
+
+impl AppDelegate {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(DockLink::default());
         unsafe { msg_send![super(this), init] }

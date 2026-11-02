@@ -1,26 +1,57 @@
+use std::cell::Cell;
+use std::rc::Weak;
+
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSControlStateValueMixed, NSControlStateValueOn, NSEventModifierFlags, NSFontWeightRegular,
-    NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuItem, NSRunningApplication, NSWorkspace,
+    NSApplication, NSControlStateValueMixed, NSControlStateValueOn, NSEventModifierFlags, NSFontWeightRegular, NSImage,
+    NSImageSymbolConfiguration, NSMenu, NSMenuDelegate, NSMenuItem, NSRunningApplication, NSScreen, NSView,
+    NSWorkspace,
 };
-use objc2_foundation::{NSArray, NSObject, NSString, ns_string};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, ns_string};
 
 use crate::actions::{self, AppWindows, CoreDock, LoginItem};
+use crate::dock::Dock;
 
 define_class!(
-    /// A menu item's target, running a closure.
+    /// A control's or menu item's target, running a closure.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ErisDockMenuAction"]
+    #[name = "ErisDockAction"]
     #[ivars = Box<dyn Fn()>]
-    struct MenuAction;
+    pub struct Action;
 
-    impl MenuAction {
+    impl Action {
         #[unsafe(method(run:))]
         fn run(&self, _sender: Option<&AnyObject>) {
             (self.ivars())();
+        }
+    }
+);
+
+impl Action {
+    pub fn new(mtm: MainThreadMarker, action: impl Fn() + 'static) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(Box::new(action) as Box<dyn Fn()>);
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+define_class!(
+    /// Keeps a menu to the part of the screen above the dock.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErisDockMenuPlacement"]
+    #[ivars = Cell<CGRect>]
+    struct MenuPlacement;
+
+    unsafe impl NSObjectProtocol for MenuPlacement {}
+
+    unsafe impl NSMenuDelegate for MenuPlacement {
+        #[unsafe(method(confinementRectForMenu:onScreen:))]
+        fn confinement(&self, _menu: &NSMenu, _screen: Option<&NSScreen>) -> CGRect {
+            self.ivars().get()
         }
     }
 );
@@ -30,19 +61,19 @@ define_class!(
 pub struct Menu {
     mtm: MainThreadMarker,
     pub menu: Retained<NSMenu>,
-    actions: Vec<Retained<MenuAction>>,
+    actions: Vec<Retained<Action>>,
+    placement: Option<Retained<MenuPlacement>>,
 }
 
 impl Menu {
     pub fn new(mtm: MainThreadMarker) -> Self {
         let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
-        Self { mtm, menu, actions: Vec::new() }
+        Self { mtm, menu, actions: Vec::new(), placement: None }
     }
 
     pub fn item(&mut self, title: &str, action: impl Fn() + 'static) -> Retained<NSMenuItem> {
-        let target = MenuAction::alloc(self.mtm).set_ivars(Box::new(action) as Box<dyn Fn()>);
-        let target: Retained<MenuAction> = unsafe { msg_send![super(target), init] };
+        let target = Action::new(self.mtm, action);
         let item = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(self.mtm),
@@ -57,6 +88,28 @@ impl Menu {
         self.menu.addItem(&item);
         self.actions.push(target);
         item
+    }
+
+    /// Opens the menu centred on `x` with its bottom on `bottom`, both in `view`'s coordinates,
+    /// and runs it until it closes. AppKit's own estimate of a menu's height runs a couple of
+    /// dozen points over, so rather than placing its top from that, the menu is kept above
+    /// `bottom` and opened there: with no room below, AppKit opens it upward against it.
+    pub fn pop_up_above(&mut self, view: &NSView, x: f64, bottom: f64) {
+        if let Some((window, screen)) =
+            view.window().and_then(|window| Some((window.frame(), window.screen()?.frame())))
+        {
+            let floor = window.origin.y + bottom;
+            let above = CGRect::new(
+                CGPoint::new(screen.origin.x, floor),
+                CGSize::new(screen.size.width, screen.origin.y + screen.size.height - floor),
+            );
+            let placement = MenuPlacement::alloc(self.mtm).set_ivars(Cell::new(above));
+            let placement: Retained<MenuPlacement> = unsafe { msg_send![super(placement), init] };
+            self.menu.setDelegate(Some(ProtocolObject::from_ref(&*placement)));
+            self.placement = Some(placement);
+        }
+        let width = self.menu.size().width;
+        self.menu.popUpMenuPositioningItem_atLocation_inView(None, CGPoint::new(x - width / 2.0, bottom), Some(view));
     }
 
     /// An item that stands in for the one before it while `modifiers` are held.
@@ -111,7 +164,8 @@ pub fn app_menu(mtm: MainThreadMarker, app: &Retained<NSRunningApplication>) -> 
     if let Some(url) = app.bundleURL() {
         menu.submenu("Options", |options| {
             options.item("Show in Finder", move || {
-                NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&NSArray::from_retained_slice(std::slice::from_ref(&url)));
+                NSWorkspace::sharedWorkspace()
+                    .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(std::slice::from_ref(&url)));
             });
         });
         menu.separator();
@@ -147,8 +201,13 @@ pub fn app_menu(mtm: MainThreadMarker, app: &Retained<NSRunningApplication>) -> 
 }
 
 /// The menu the dock's own background opens.
-pub fn dock_menu(mtm: MainThreadMarker) -> Menu {
+pub fn dock_menu(mtm: MainThreadMarker, dock: Weak<Dock>) -> Menu {
     let mut menu = Menu::new(mtm);
+    menu.item("Settings…", move || {
+        if let Some(dock) = dock.upgrade() {
+            dock.open_settings();
+        }
+    });
     let login = menu.item("Open at Login", LoginItem::toggle);
     if LoginItem::is_enabled() {
         login.setState(NSControlStateValueOn);
@@ -166,6 +225,7 @@ fn minimized_image() -> Option<Retained<NSImage>> {
         ns_string!("diamond.fill"),
         Some(ns_string!("Minimized")),
     )?;
-    let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight(7.0, unsafe { NSFontWeightRegular });
+    let configuration =
+        NSImageSymbolConfiguration::configurationWithPointSize_weight(7.0, unsafe { NSFontWeightRegular });
     image.imageWithSymbolConfiguration(&configuration)
 }

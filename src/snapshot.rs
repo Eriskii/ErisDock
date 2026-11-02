@@ -9,16 +9,22 @@ use objc2_core_graphics::{
 };
 use objc2_foundation::{NSDictionary, NSString};
 
+use crate::animation::Style;
 use crate::apps::AppList;
+use crate::config;
 use crate::settings::Settings;
 use crate::surface::Surface;
 
 const SCALE: f64 = 2.0;
 
-/// `ErisDock --snapshot <file.png>` draws the dock rising, hovered, pressed and tucking away,
+/// `ErisDock --snapshot <file.png> [--style <style>]` draws the dock rising, hovered, pressed and tucking away,
 /// frame by frame, one under another in a single PNG, without putting anything on screen.
-pub fn write(path: &Path) {
-    let mut surface = Surface::new(Settings::load(), SCALE);
+pub fn write(path: &Path, style: Option<Style>) {
+    let mut config = config::load().unwrap_or_default();
+    if let Some(style) = style {
+        config.animation = style;
+    }
+    let mut surface = Surface::new(Settings::from_config(&config, Settings::native_icon_size()), SCALE);
     surface.bounds = CGRect::new(CGPoint::ZERO, CGSize::new(640.0, surface.panel_height()));
     surface.root.setFrame(surface.bounds);
     let mut apps = AppList::default();
@@ -99,7 +105,11 @@ fn stack(frames: &[CFRetained<CGImage>]) -> Option<CFRetained<CGImage>> {
     let context = bitmap(width / SCALE, height / SCALE * frames.len() as f64)?;
     for (i, frame) in frames.iter().enumerate() {
         let y = height * (frames.len() - 1 - i) as f64;
-        CGContext::draw_image(Some(&context), CGRect::new(CGPoint::new(0.0, y), CGSize::new(width, height)), Some(frame));
+        CGContext::draw_image(
+            Some(&context),
+            CGRect::new(CGPoint::new(0.0, y), CGSize::new(width, height)),
+            Some(frame),
+        );
     }
     CGBitmapContextCreateImage(Some(&context))
 }

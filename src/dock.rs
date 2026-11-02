@@ -8,10 +8,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, msg_send, sel};
 use objc2_app_kit::{
-    NSApplicationDidChangeScreenParametersNotification, NSEvent, NSEventMask, NSRunningApplication, NSScreen,
-    NSWorkspace, NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidHideApplicationNotification,
-    NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification,
-    NSWorkspaceDidUnhideApplicationNotification,
+    NSApplication, NSApplicationDidChangeScreenParametersNotification, NSEvent, NSEventMask, NSRunningApplication,
+    NSScreen, NSWindowWillCloseNotification, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+    NSWorkspaceDidHideApplicationNotification, NSWorkspaceDidLaunchApplicationNotification,
+    NSWorkspaceDidTerminateApplicationNotification, NSWorkspaceDidUnhideApplicationNotification,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
@@ -22,8 +22,10 @@ use objc2_quartz_core::CADisplayLink;
 
 use crate::actions::{self, after};
 use crate::apps::AppList;
+use crate::config::{self, Config};
 use crate::menu;
 use crate::settings::Settings;
+use crate::settings_window::SettingsWindow;
 use crate::surface::Surface;
 use crate::view::{AppsObserver, DockPanel, DockView, Ticker};
 
@@ -36,7 +38,9 @@ use crate::view::{AppsObserver, DockPanel, DockView, Ticker};
 pub struct Dock {
     me: Weak<Dock>,
     mtm: MainThreadMarker,
-    settings: Settings,
+    config: RefCell<Config>,
+    settings: RefCell<Settings>,
+    settings_window: RefCell<Option<SettingsWindow>>,
     panel: Retained<DockPanel>,
     view: Retained<DockView>,
     ticker: Retained<Ticker>,
@@ -51,6 +55,11 @@ struct State {
     screen: Option<u32>,
     shown: bool,
     menu_open: bool,
+    /// Held up while the Settings window is open, to show what it changes.
+    pinned: bool,
+    /// When the config file was last read or written, to notice others' changes.
+    config_modified: Option<std::time::SystemTime>,
+    config_timer: Option<Retained<NSTimer>>,
     reveal_timer: Option<Retained<NSTimer>>,
     hide_timer: Option<Retained<NSTimer>>,
     link: Option<Retained<CADisplayLink>>,
@@ -62,7 +71,11 @@ struct State {
 
 impl Dock {
     pub fn new(mtm: MainThreadMarker) -> Rc<Self> {
-        let settings = Settings::load();
+        let config = config::load().unwrap_or_else(|error| {
+            eprintln!("ErisDock: {error}; using the defaults");
+            Config::default()
+        });
+        let settings = Settings::from_config(&config, Settings::native_icon_size());
         let scale = NSScreen::screens(mtm).iter().map(|s| s.backingScaleFactor()).fold(1.0, f64::max);
         let surface = Surface::new(settings.clone(), scale);
         let view = DockView::new(mtm, &surface.root);
@@ -71,7 +84,9 @@ impl Dock {
         let dock = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             mtm,
-            settings,
+            config: RefCell::new(config),
+            settings: RefCell::new(settings),
+            settings_window: RefCell::new(None),
             panel,
             view,
             ticker,
@@ -139,6 +154,14 @@ impl Dock {
         state.monitors = monitors;
         state.observers = observers;
         state.apps_observer = Some(apps_observer);
+        state.config_modified = config::modified();
+        let me = self.me.clone();
+        let check = RcBlock::new(move |_: NonNull<NSTimer>| {
+            if let Some(dock) = me.upgrade() {
+                dock.check_config();
+            }
+        });
+        state.config_timer = Some(unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.0, true, &check) });
         drop(state);
         self.apps_changed();
     }
@@ -155,16 +178,23 @@ impl Dock {
                 handler(&dock);
             }
         });
-        unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), None, Some(&NSOperationQueue::mainQueue()), &block) }
+        unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(name),
+                None,
+                Some(&NSOperationQueue::mainQueue()),
+                &block,
+            )
+        }
     }
 
     // Showing and hiding
 
     fn pointer_moved(&self) {
         let mouse = NSEvent::mouseLocation();
-        let (shown, screen, menu_open) = {
+        let (shown, screen, held) = {
             let state = self.state.borrow();
-            (state.shown, state.screen, state.menu_open)
+            (state.shown, state.screen, state.menu_open || state.pinned)
         };
         if shown {
             let frame = self.panel.frame();
@@ -177,7 +207,7 @@ impl Dock {
             };
             // Only the body takes clicks; the rest of the panel's strip passes them through.
             self.panel.setIgnoresMouseEvents(!inside);
-            if menu_open || near {
+            if held || near {
                 self.cancel_hide();
             } else {
                 self.schedule_hide();
@@ -194,7 +224,7 @@ impl Dock {
 
     /// The screen whose bottom edge the pointer is on, if it's within reach of the dock there.
     fn edge_screen(&self, mouse: CGPoint) -> Option<(Retained<NSScreen>, u32)> {
-        let reach = self.surface.borrow().resting_width() / 2.0 + self.settings.trigger_margin;
+        let reach = self.surface.borrow().resting_width() / 2.0 + self.settings.borrow().trigger_margin;
         let screens: Vec<_> = NSScreen::screens(self.mtm).iter().collect();
         let frames: Vec<CGRect> = screens.iter().map(|screen| screen.frame()).collect();
         let index = frames.iter().enumerate().position(|(i, frame)| {
@@ -203,7 +233,10 @@ impl Dock {
             let in_reach = (mouse.x - (min_x + frame.size.width / 2.0)).abs() <= reach;
             // Where another screen carries on below, the pointer doesn't stop at the edge.
             let continues = frames.iter().enumerate().any(|(j, other)| {
-                j != i && other.origin.y + other.size.height == min_y && other.origin.x <= mouse.x && mouse.x < other.origin.x + other.size.width
+                j != i
+                    && other.origin.y + other.size.height == min_y
+                    && other.origin.x <= mouse.x
+                    && mouse.x < other.origin.x + other.size.width
             });
             on_edge && in_reach && !continues
         })?;
@@ -217,7 +250,7 @@ impl Dock {
             return;
         }
         let me = self.me.clone();
-        let timer = after(self.settings.reveal_delay, move || {
+        let timer = after(self.settings.borrow().reveal_delay, move || {
             if let Some(dock) = me.upgrade() {
                 dock.state.borrow_mut().reveal_timer = None;
                 if let Some((screen, id)) = dock.edge_screen(NSEvent::mouseLocation()) {
@@ -240,7 +273,7 @@ impl Dock {
             return;
         }
         let me = self.me.clone();
-        let timer = after(self.settings.hide_delay, move || {
+        let timer = after(self.settings.borrow().hide_delay, move || {
             if let Some(dock) = me.upgrade() {
                 dock.state.borrow_mut().hide_timer = None;
                 dock.hide();
@@ -283,7 +316,7 @@ impl Dock {
     fn hide(&self) {
         {
             let mut state = self.state.borrow_mut();
-            if !state.shown || state.menu_open {
+            if !state.shown || state.menu_open || state.pinned {
                 return;
             }
             state.shown = false;
@@ -426,27 +459,141 @@ impl Dock {
     }
 
     fn show_menu(&self, target: Option<(Retained<NSRunningApplication>, f64)>, point: CGPoint) {
-        let menu = match &target {
+        let mut menu = match &target {
             Some((app, _)) => menu::app_menu(self.mtm, app),
-            None => menu::dock_menu(self.mtm),
+            None => menu::dock_menu(self.mtm, self.me.clone()),
         };
         self.state.borrow_mut().menu_open = true;
         self.cancel_hide();
-        let height = {
+        let top = {
             let mut surface = self.surface.borrow_mut();
             surface.shows_label = false;
-            surface.shape.height.max(self.settings.height())
+            surface.shape.height.max(self.settings.borrow().height())
         };
         self.animate();
-        // Above the icon, clear of the body, as the native Dock's menus open.
-        let size = menu.menu.size();
+        // Just above the icon, clear of the body, as the native Dock's menus open.
         let x = target.as_ref().map_or(point.x, |(_, center)| *center);
-        let origin = CGPoint::new(x - size.width / 2.0, height + 2.0 + size.height);
-        menu.menu.popUpMenuPositioningItem_atLocation_inView(None, origin, Some(&self.view));
+        menu.pop_up_above(&self.view, x, top + 6.0);
         self.state.borrow_mut().menu_open = false;
         self.surface.borrow_mut().shows_label = true;
         self.animate();
         self.pointer_moved();
+    }
+
+    // Settings
+
+    /// Changes the config, writes it to the file, and puts it into effect.
+    pub fn edit_config(&self, edit: impl FnOnce(&mut Config)) {
+        let mut config = self.config.borrow().clone();
+        edit(&mut config);
+        if config == *self.config.borrow() {
+            return;
+        }
+        if let Err(error) = config::save(&config) {
+            eprintln!("ErisDock: couldn't save {}: {error}", config::path().display());
+        }
+        self.state.borrow_mut().config_modified = config::modified();
+        self.apply_config(config);
+    }
+
+    /// Reads the config file again if something else has changed it.
+    fn check_config(&self) {
+        let modified = config::modified();
+        if modified == self.state.borrow().config_modified {
+            return;
+        }
+        self.state.borrow_mut().config_modified = modified;
+        match config::load() {
+            Ok(config) if config != *self.config.borrow() => self.apply_config(config),
+            Ok(_) => {}
+            Err(error) => eprintln!("ErisDock: {error}; keeping the settings as they were"),
+        }
+    }
+
+    fn apply_config(&self, config: Config) {
+        let settings = Settings::from_config(&config, Settings::native_icon_size());
+        *self.config.borrow_mut() = config;
+        *self.settings.borrow_mut() = settings.clone();
+        self.surface.borrow_mut().apply(settings);
+        // A new icon size changes the panel's height.
+        let screen = self.state.borrow().screen;
+        if let Some(screen) = screen.and_then(|id| self.screen(id)) {
+            self.panel.setFrame_display(self.panel_frame(&screen), false);
+            self.surface.borrow_mut().bounds = self.view.bounds();
+        }
+        self.animate();
+        if let Some(window) = &*self.settings_window.borrow() {
+            window.sync(&self.config.borrow(), &self.settings.borrow());
+        }
+    }
+
+    pub fn open_settings(&self) {
+        if self.settings_window.borrow().is_none() {
+            let window = SettingsWindow::new(self.mtm, self.me.clone());
+            let me = self.me.clone();
+            let closing = RcBlock::new(move |_: NonNull<NSNotification>| {
+                if let Some(dock) = me.upgrade() {
+                    dock.set_pinned(false);
+                }
+            });
+            let observer = unsafe {
+                NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                    Some(NSWindowWillCloseNotification),
+                    Some(&window.window),
+                    Some(&NSOperationQueue::mainQueue()),
+                    &closing,
+                )
+            };
+            self.state.borrow_mut().observers.push(observer);
+            *self.settings_window.borrow_mut() = Some(window);
+        }
+        let window = {
+            let settings_window = self.settings_window.borrow();
+            let settings_window = settings_window.as_ref().expect("made above");
+            settings_window.sync(&self.config.borrow(), &self.settings.borrow());
+            settings_window.window.clone()
+        };
+        NSApplication::sharedApplication(self.mtm).activate();
+        window.makeKeyAndOrderFront(None);
+        self.set_pinned(true);
+    }
+
+    /// Holds the dock up, on the Settings window's screen, or lets it go.
+    fn set_pinned(&self, pinned: bool) {
+        self.state.borrow_mut().pinned = pinned;
+        if !pinned {
+            // Tucks away shortly unless the pointer is near.
+            self.pointer_moved();
+            return;
+        }
+        let window_screen = self.settings_window.borrow().as_ref().and_then(|window| window.window.screen());
+        if let Some(screen) = window_screen.or_else(|| NSScreen::mainScreen(self.mtm))
+            && let Some(id) = display_id(&screen)
+        {
+            self.reveal(&screen, id);
+        }
+    }
+
+    /// Tucks the dock away and raises it again, to show off its animation.
+    pub fn replay(&self) {
+        if !self.state.borrow().shown {
+            return;
+        }
+        self.surface.borrow_mut().set_risen(false);
+        self.animate();
+        let me = self.me.clone();
+        after(0.45, move || {
+            if let Some(dock) = me.upgrade()
+                && dock.state.borrow().shown
+            {
+                dock.surface.borrow_mut().set_risen(true);
+                dock.animate();
+            }
+        });
+    }
+
+    fn screen(&self, id: u32) -> Option<Retained<NSScreen>> {
+        NSScreen::screens(self.mtm).iter().find(|screen| display_id(screen) == Some(id))
     }
 }
 

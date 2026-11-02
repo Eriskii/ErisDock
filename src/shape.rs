@@ -134,7 +134,11 @@ impl Corner {
                 control2: offset(arc_end, -(r - arc_side - d) * handle, -(r - d) * handle),
                 end: arc_end,
             },
-            Segment { control1: offset(arc_end, d, c), control2: offset(arc_end, d, b + c), end: offset(arc_end, d, a + b + c) },
+            Segment {
+                control1: offset(arc_end, d, c),
+                control2: offset(arc_end, d, b + c),
+                end: offset(arc_end, d, a + b + c),
+            },
         ];
         Self { start, segments }
     }
@@ -147,18 +151,22 @@ impl Corner {
         let points: Vec<CGPoint> = std::iter::once(self.start).chain(self.segments.iter().map(|s| s.end)).collect();
         let segments = (0..self.segments.len())
             .rev()
-            .map(|i| Segment { control1: self.segments[i].control2, control2: self.segments[i].control1, end: points[i] })
+            .map(|i| Segment {
+                control1: self.segments[i].control2,
+                control2: self.segments[i].control1,
+                end: points[i],
+            })
             .collect();
         Self { start: self.end(), segments }
     }
 
     /// Adds the corner's curves; the path must already be at `start`.
     fn append_to(&self, elements: &mut Vec<Element>) {
-        elements.extend(
-            self.segments
-                .iter()
-                .map(|s| Element::Curve { control1: s.control1, control2: s.control2, end: s.end }),
-        );
+        elements.extend(self.segments.iter().map(|s| Element::Curve {
+            control1: s.control1,
+            control2: s.control2,
+            end: s.end,
+        }));
     }
 }
 
