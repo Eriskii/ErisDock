@@ -2,6 +2,9 @@
 name = "erisdock"
 version = "0.1.0"
 edition = "2024"
+description = "A dock for macOS that rises out of the bottom edge of the screen, like the notch"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Eriskii/ErisDock"
 
 [dependencies]
 block2 = "0.6.2"

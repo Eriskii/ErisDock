@@ -69,3 +69,7 @@ launch:
 | `spreadResponse`, `spreadDamping` | 0.5, 0.62 | the widening's spring |
 | `revealDelay`, `hideDelay` | 0.06, 0.35 | seconds on the edge before it rises; away before it tucks in |
 | `triggerMargin` | 48 | how far beside the dock the edge still raises it |
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).

@@ -441,7 +441,7 @@ impl Dock {
         // Above the icon, clear of the body, as the native Dock's menus open.
         let size = menu.menu.size();
         let x = target.as_ref().map_or(point.x, |(_, center)| *center);
-        let origin = CGPoint::new(x - size.width / 2.0, height + 8.0 + size.height);
+        let origin = CGPoint::new(x - size.width / 2.0, height + 2.0 + size.height);
         menu.menu.popUpMenuPositioningItem_atLocation_inView(None, origin, Some(&self.view));
         self.state.borrow_mut().menu_open = false;
         self.surface.borrow_mut().shows_label = true;
