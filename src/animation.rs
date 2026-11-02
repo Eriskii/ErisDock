@@ -41,13 +41,13 @@ impl Spring {
 #[serde(rename_all = "lowercase")]
 pub enum Style {
     #[default]
-    Expressive,
     Squishy,
+    Expressive,
     Standard,
 }
 
 impl Style {
-    pub const ALL: [Style; 3] = [Style::Expressive, Style::Squishy, Style::Standard];
+    pub const ALL: [Style; 3] = [Style::Squishy, Style::Expressive, Style::Standard];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn the_styles_rise_from_most_to_least_bounce() {
-        let [expressive, squishy, standard] = Style::ALL.map(|style| peak(style.animation().rise));
+        let [squishy, expressive, standard] = Style::ALL.map(|style| peak(style.animation().rise));
         assert!(squishy > expressive && expressive > standard, "{squishy} {expressive} {standard}");
         assert!(standard < 1.005);
     }

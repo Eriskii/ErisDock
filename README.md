@@ -66,11 +66,11 @@ comments. Sizes left out scale with the icon size, which is the native Dock's ow
 
 The animations come as sets:
 
-- **Expressive** (the default): Material 3 Expressive's springs. The dock rises and widens
+- **Squishy** (the default): the dock rises before it widens, overshooting tall and narrow
+  and then wide, and pressed icons squash flat.
+- **Expressive**: Material 3 Expressive's springs. The dock rises and widens
   together, quick and direct, with a little give as it lands; icons pop in with a small
   bounce and shrink slightly when pressed.
-- **Squishy**: the first version's. The dock rises before it widens, overshooting tall and
-  narrow and then wide, and pressed icons squash flat.
 - **Standard**: Material 3's standard springs, straight up and out with no bounce.
 
 ## License

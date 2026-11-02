@@ -31,9 +31,9 @@ pub struct Config {
 const TEMPLATE: &str = r#"# ErisDock's settings. ErisDock picks up changes to this file as soon as it's saved, and its
 # Settings window (right-click the dock between icons) writes the common ones here too.
 
-# How the dock moves: "expressive" (Material 3 Expressive, the default), "squishy" or
+# How the dock moves: "squishy" (the default), "expressive" (Material 3 Expressive) or
 # "standard" (Material 3, no bounce).
-animation = "expressive"
+animation = "squishy"
 
 # Icon size in points. Left out, it's the native Dock's.
 # icon_size = 48
