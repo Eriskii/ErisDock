@@ -23,6 +23,26 @@ pub fn open(app: &NSRunningApplication) {
     NSWorkspace::sharedWorkspace().openApplicationAtURL_configuration_completionHandler(&url, &configuration, None);
 }
 
+/// Opens the app at `path`.
+pub fn launch(path: &str) {
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    let configuration = NSWorkspaceOpenConfiguration::configuration();
+    NSWorkspace::sharedWorkspace().openApplicationAtURL_configuration_completionHandler(&url, &configuration, None);
+}
+
+/// Opens the files at `paths` with the app at `app`.
+pub fn open_with(paths: &[String], app: &str) {
+    let urls: Vec<_> = paths.iter().map(|path| NSURL::fileURLWithPath(&NSString::from_str(path))).collect();
+    let app = NSURL::fileURLWithPath(&NSString::from_str(app));
+    let configuration = NSWorkspaceOpenConfiguration::configuration();
+    NSWorkspace::sharedWorkspace().openURLs_withApplicationAtURL_configuration_completionHandler(
+        &objc2_foundation::NSArray::from_retained_slice(&urls),
+        &app,
+        &configuration,
+        None,
+    );
+}
+
 pub fn hide_others(app: &NSRunningApplication) {
     let pid = app.processIdentifier();
     for other in NSWorkspace::sharedWorkspace().runningApplications().iter() {

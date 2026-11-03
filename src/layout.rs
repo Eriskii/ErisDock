@@ -3,19 +3,28 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use crate::settings::Settings;
 use crate::shape::DockShape;
 
-/// Where an item's springs are.
+/// Where a tile's springs are.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Motion {
     pub appear: f64,
     pub hover: f64,
     pub press: f64,
     pub active: f64,
+    /// 1 while the app runs, showing its dot.
+    pub running: f64,
+    /// How far the icon is from its slot, sliding back into it after the row is reordered.
+    pub shift: (f64, f64),
+    /// How high a launching app's icon has bounced, in icon heights.
+    pub bounce: f64,
 }
 
 /// Where an item goes this frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
+    /// The middle of the slot.
     pub center: f64,
+    /// The middle of the icon's foot in its slot, before hovering, sliding or bouncing.
+    pub slot_base: CGPoint,
     /// The slot that answers the pointer: the icon's column, spacing and all, the body's height.
     pub hit: CGRect,
     /// The middle of the icon's foot; it scales from there.
@@ -67,16 +76,21 @@ pub fn place(
             let size = appear * pinch;
             let grow = size * (1.0 + a.hover_scale * m.hover);
             let fade = appear.min(1.0) * reveal;
+            let slot_base = CGPoint::new(center, height - s.top_padding - s.icon_size * size);
             Placement {
                 center,
+                slot_base,
                 hit: CGRect::new(CGPoint::new(center - slot * size / 2.0, 0.0), CGSize::new(slot * size, height)),
                 // The icon's top rides the body's top edge; hovering lifts it and grows it out of
                 // the body, and pressing squashes or shrinks it onto its foot.
-                icon_base: CGPoint::new(center, height - s.top_padding - s.icon_size * size + a.hover_lift * m.hover),
+                icon_base: CGPoint::new(
+                    slot_base.x + m.shift.0,
+                    slot_base.y + m.shift.1 + a.hover_lift * m.hover + m.bounce * s.icon_size,
+                ),
                 icon_scale: (grow * (1.0 + a.press_scale.0 * m.press), grow * (1.0 + a.press_scale.1 * m.press)),
                 dot_position: CGPoint::new(center, height - s.height() + s.bottom_padding * 0.4),
                 dot_width: s.dot_size * (1.0 + 2.5 * m.active) * pinch,
-                dot_opacity: fade * (0.45 + 0.55 * m.active),
+                dot_opacity: fade * m.running.clamp(0.0, 1.0) * (0.45 + 0.55 * m.active),
                 opacity: fade,
             }
         })
@@ -89,7 +103,7 @@ mod tests {
     use super::*;
 
     fn settled(count: usize) -> Vec<Motion> {
-        vec![Motion { appear: 1.0, ..Default::default() }; count]
+        vec![Motion { appear: 1.0, running: 1.0, ..Default::default() }; count]
     }
 
     #[test]

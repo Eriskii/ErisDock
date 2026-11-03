@@ -10,10 +10,11 @@ use objc2_app_kit::{
     NSWorkspace,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, ns_string};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, NSURL, ns_string};
 
 use crate::actions::{self, AppWindows, CoreDock, LoginItem};
 use crate::dock::Dock;
+use crate::row::FINDER;
 
 define_class!(
     /// A control's or menu item's target, running a closure.
@@ -134,43 +135,77 @@ impl Menu {
     }
 }
 
-/// The menu an app's icon opens, after the native Dock's: its windows, Options, Show All
-/// Windows, Hide and Quit, with Option turning those two into Hide Others and Force Quit.
-pub fn app_menu(mtm: MainThreadMarker, app: &Retained<NSRunningApplication>) -> Menu {
-    let mut menu = Menu::new(mtm);
-    let is_finder = app.bundleIdentifier().is_some_and(|id| id.to_string() == "com.apple.finder");
+/// The app a menu is for.
+pub struct Target {
+    pub key: String,
+    pub app: Option<Retained<NSRunningApplication>>,
+    pub path: Option<String>,
+    pub pinned: bool,
+}
 
-    if AppWindows::is_trusted() {
-        let windows = AppWindows::list(app.processIdentifier());
-        let minimized = minimized_image();
-        for window in &windows {
-            let (raised, owner) = (window.clone(), app.clone());
-            let item = menu.item(&window.title, move || AppWindows::raise(&raised, &owner));
-            if window.minimized {
-                item.setState(NSControlStateValueMixed);
-                unsafe { item.setMixedStateImage(minimized.as_deref()) };
-            } else if window.main && app.isActive() {
-                item.setState(NSControlStateValueOn);
+/// The menu an app's icon opens, after the native Dock's: its windows, Options (Keep in Dock,
+/// Show in Finder), Show All Windows, Hide and Quit, with Option turning those two into Hide
+/// Others and Force Quit. A pinned app that isn't running has Options and Open.
+pub fn app_menu(mtm: MainThreadMarker, target: &Target, pinning: bool, dock: Weak<Dock>) -> Menu {
+    let mut menu = Menu::new(mtm);
+    let is_finder = target.key == FINDER;
+
+    if let Some(app) = &target.app {
+        if AppWindows::is_trusted() {
+            let windows = AppWindows::list(app.processIdentifier());
+            let minimized = minimized_image();
+            for window in &windows {
+                let (raised, owner) = (window.clone(), app.clone());
+                let item = menu.item(&window.title, move || AppWindows::raise(&raised, &owner));
+                if window.minimized {
+                    item.setState(NSControlStateValueMixed);
+                    unsafe { item.setMixedStateImage(minimized.as_deref()) };
+                } else if window.main && app.isActive() {
+                    item.setState(NSControlStateValueOn);
+                }
             }
-        }
-        if !windows.is_empty() {
+            if !windows.is_empty() {
+                menu.separator();
+            }
+        } else {
+            menu.item("Allow Window List…", AppWindows::request_access);
             menu.separator();
         }
-    } else {
-        menu.item("Allow Window List…", AppWindows::request_access);
-        menu.separator();
     }
 
-    if let Some(url) = app.bundleURL() {
+    if let Some(path) = target.path.clone() {
+        let key = target.key.clone();
         menu.submenu("Options", |options| {
+            if pinning && !is_finder {
+                let (dock, path) = (dock.clone(), path.clone());
+                let keep = options.item("Keep in Dock", move || {
+                    if let Some(dock) = dock.upgrade() {
+                        dock.toggle_pin(&key, &path);
+                    }
+                });
+                if target.pinned {
+                    keep.setState(NSControlStateValueOn);
+                }
+            }
             options.item("Show in Finder", move || {
-                NSWorkspace::sharedWorkspace()
-                    .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(std::slice::from_ref(&url)));
+                let url = NSURL::fileURLWithPath(&NSString::from_str(&path));
+                NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[url]));
             });
         });
         menu.separator();
     }
 
+    let Some(app) = &target.app else {
+        if let Some(path) = target.path.clone() {
+            let key = target.key.clone();
+            menu.item("Open", move || {
+                if let Some(dock) = dock.upgrade() {
+                    dock.launch(&key, &path);
+                }
+            });
+        }
+        return menu;
+    };
     if is_finder {
         menu.item("New Finder Window", actions::new_finder_window);
     }

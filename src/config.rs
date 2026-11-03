@@ -25,6 +25,8 @@ pub struct Config {
     pub reveal_delay: Option<f64>,
     pub hide_delay: Option<f64>,
     pub trigger_margin: Option<f64>,
+    pub pinning: Option<bool>,
+    pub block_self_pinning: Option<bool>,
 }
 
 /// What a new config file says: every setting, the ones left at their defaults commented out.
@@ -57,6 +59,14 @@ animation = "squishy"
 
 # How far beside the dock, in points, the bottom edge still raises it.
 # trigger_margin = 48
+
+# Pinned apps stay in the dock whether they're running or not; they're kept in pinned.toml,
+# beside this file. Turned off, the dock shows only running apps.
+# pinning = true
+
+# Apps add themselves to the native Dock (installers, "Keep in Dock?" prompts). ErisDock never
+# follows them unless this is turned off; only you pin apps to it.
+# block_self_pinning = true
 "#;
 
 pub fn path() -> PathBuf {
@@ -124,6 +134,14 @@ pub fn update(text: &str, config: &Config) -> Result<String, String> {
         ("hide_delay", config.hide_delay),
         ("trigger_margin", config.trigger_margin),
     ];
+    for (key, flag) in [("pinning", config.pinning), ("block_self_pinning", config.block_self_pinning)] {
+        match flag {
+            Some(flag) => document[key] = value(flag),
+            None => {
+                document.remove(key);
+            }
+        }
+    }
     for (key, number) in numbers {
         match number {
             // Whole numbers are written as integers, which read back as floats all the same.
@@ -162,8 +180,13 @@ mod tests {
 
     #[test]
     fn saving_keeps_comments_and_round_trips() {
-        let config =
-            Config { animation: Style::Squishy, icon_size: Some(40.0), hide_delay: Some(0.5), ..Config::default() };
+        let config = Config {
+            animation: Style::Standard,
+            icon_size: Some(40.0),
+            hide_delay: Some(0.5),
+            block_self_pinning: Some(false),
+            ..Config::default()
+        };
         let text = update(TEMPLATE, &config).unwrap();
         assert!(text.contains("# ErisDock's settings."));
         assert!(text.contains("icon_size = 40\n"));

@@ -12,13 +12,16 @@ use objc2_foundation::{NSDictionary, NSString};
 use crate::animation::Style;
 use crate::apps::AppList;
 use crate::config;
+use crate::pins::Pins;
+use crate::row;
 use crate::settings::Settings;
 use crate::surface::Surface;
 
 const SCALE: f64 = 2.0;
 
-/// `ErisDock --snapshot <file.png> [--style <style>]` draws the dock rising, hovered, pressed and tucking away,
-/// frame by frame, one under another in a single PNG, without putting anything on screen.
+/// `ErisDock --snapshot <file.png> [--style <style>]` draws the dock rising, hovered, pressed,
+/// with a badge, an app dragged along the row and dropped, and tucking away, frame by frame,
+/// one under another in a single PNG, without putting anything on screen.
 pub fn write(path: &Path, style: Option<Style>) {
     let mut config = config::load().unwrap_or_default();
     if let Some(style) = style {
@@ -31,7 +34,8 @@ pub fn write(path: &Path, style: Option<Style>) {
     apps.refresh();
     apps.apps.truncate(8);
     let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier());
-    surface.set_apps(&apps.apps, frontmost, false);
+    let row = row::desired(&Pins::load().pinned(), &apps.running(), surface.settings.pinning);
+    surface.set_row(&row, &apps.by_pid(), frontmost, false);
     surface.render();
 
     let mut frames = Vec::new();
@@ -46,15 +50,30 @@ pub fn write(path: &Path, style: Option<Style>) {
     };
     surface.set_risen(true);
     run(&mut surface, 0.6, 2);
-    let hovered = surface.items.get(2).map(|item| (item.pid, item.hit));
-    if let Some((pid, hit)) = hovered {
-        surface.hover(Some(CGPoint::new(hit.origin.x + hit.size.width / 2.0, hit.size.height / 2.0)));
+    if let Some((key, point)) = surface.slot_center(2) {
+        surface.hover(Some(point));
         run(&mut surface, 0.36, 9);
-        surface.press(Some(pid));
+        surface.press(Some(key.clone()));
         run(&mut surface, 0.12, 4);
         surface.press(None);
+        surface.set_badge(&key, Some("3".into()));
         run(&mut surface, 0.3, 10);
         surface.hover(None);
+    }
+    // Drag the second app to the end of the row and let go.
+    if let (Some((key, from)), Some((_, to))) = (surface.slot_center(1), surface.slot_center(apps.apps.len() - 1)) {
+        surface.begin_drag(&key, from);
+        for step in 1..=12 {
+            let t = step as f64 / 12.0;
+            surface.drag_to(
+                CGPoint::new(from.x + (to.x + 20.0 - from.x) * t, from.y + 14.0 * (t * std::f64::consts::PI).sin()),
+                false,
+            );
+            run(&mut surface, 1.0 / 30.0, 1);
+        }
+        run(&mut surface, 0.2, 6);
+        surface.finish_drag(true);
+        run(&mut surface, 0.4, 4);
     }
     surface.set_risen(false);
     run(&mut surface, 0.45, 3);

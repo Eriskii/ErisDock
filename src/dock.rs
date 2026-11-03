@@ -8,8 +8,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationDidChangeScreenParametersNotification, NSEvent, NSEventMask, NSRunningApplication,
-    NSScreen, NSWindowWillCloseNotification, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+    NSApplication, NSApplicationDidChangeScreenParametersNotification, NSEvent, NSEventMask, NSScreen,
+    NSWindowWillCloseNotification, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
     NSWorkspaceDidHideApplicationNotification, NSWorkspaceDidLaunchApplicationNotification,
     NSWorkspaceDidTerminateApplicationNotification, NSWorkspaceDidUnhideApplicationNotification,
 };
@@ -22,8 +22,11 @@ use objc2_quartz_core::CADisplayLink;
 
 use crate::actions::{self, after};
 use crate::apps::AppList;
+use crate::badges;
 use crate::config::{self, Config};
-use crate::menu;
+use crate::menu::{self, Target};
+use crate::pins::{self, Pins};
+use crate::row::{self, Spec};
 use crate::settings::Settings;
 use crate::settings_window::SettingsWindow;
 use crate::surface::Surface;
@@ -51,12 +54,21 @@ pub struct Dock {
 #[derive(Default)]
 struct State {
     apps: AppList,
+    pins: Pins,
+    pins_modified: Option<std::time::SystemTime>,
+    /// The row as last laid out.
+    row: Vec<Spec>,
+    /// Changes held back while something's being dragged.
+    row_dirty: bool,
+    /// The app pressed, and where, until it's let go or dragged.
+    drag_start: Option<(String, CGPoint)>,
+    polls: u32,
     /// The display the dock last rose on.
     screen: Option<u32>,
     shown: bool,
     menu_open: bool,
     /// Held up while the Settings window is open, to show what it changes.
-    pinned: bool,
+    held: bool,
     /// When the config file was last read or written, to notice others' changes.
     config_modified: Option<std::time::SystemTime>,
     config_timer: Option<Retained<NSTimer>>,
@@ -155,10 +167,12 @@ impl Dock {
         state.observers = observers;
         state.apps_observer = Some(apps_observer);
         state.config_modified = config::modified();
+        state.pins = Pins::load();
+        state.pins_modified = Pins::modified();
         let me = self.me.clone();
         let check = RcBlock::new(move |_: NonNull<NSTimer>| {
             if let Some(dock) = me.upgrade() {
-                dock.check_config();
+                dock.poll();
             }
         });
         state.config_timer = Some(unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.0, true, &check) });
@@ -194,7 +208,7 @@ impl Dock {
         let mouse = NSEvent::mouseLocation();
         let (shown, screen, held) = {
             let state = self.state.borrow();
-            (state.shown, state.screen, state.menu_open || state.pinned)
+            (state.shown, state.screen, state.menu_open || state.held)
         };
         if shown {
             let frame = self.panel.frame();
@@ -316,7 +330,7 @@ impl Dock {
     fn hide(&self) {
         {
             let mut state = self.state.borrow_mut();
-            if !state.shown || state.menu_open || state.pinned {
+            if !state.shown || state.menu_open || state.held {
                 return;
             }
             state.shown = false;
@@ -411,56 +425,292 @@ impl Dock {
     // Apps, clicks and menus
 
     pub fn apps_changed(&self) {
-        let (Ok(mut state), Ok(mut surface)) = (self.state.try_borrow_mut(), self.surface.try_borrow_mut()) else {
-            // Posted from inside a change already under way; catch up once it's done.
-            let me = self.me.clone();
-            after(0.0, move || {
-                if let Some(dock) = me.upgrade() {
-                    dock.apps_changed();
-                }
-            });
-            return;
-        };
+        let Ok(mut state) = self.state.try_borrow_mut() else { return self.later(Dock::apps_changed) };
         state.apps.refresh();
+        drop(state);
+        self.rebuild_row();
+    }
+
+    /// Lays the row out again from the pins and the running apps, unless something's being
+    /// dragged over it, in which case once that's done.
+    fn rebuild_row(&self) {
+        let (Ok(mut state), Ok(mut surface)) = (self.state.try_borrow_mut(), self.surface.try_borrow_mut()) else {
+            return self.later(Dock::rebuild_row);
+        };
+        if surface.is_dragging() || surface.gap_index().is_some() {
+            state.row_dirty = true;
+            return;
+        }
+        let row = row::desired(&state.pins.pinned(), &state.apps.running(), self.settings.borrow().pinning);
         let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier());
-        surface.set_apps(&state.apps.apps, frontmost, self.panel.isVisible());
+        surface.set_row(&row, &state.apps.by_pid(), frontmost, self.panel.isVisible());
+        state.row = row;
+        state.row_dirty = false;
         drop((state, surface));
         self.animate();
+    }
+
+    /// Runs `f` once whatever is under way has finished.
+    fn later(&self, f: fn(&Dock)) {
+        let me = self.me.clone();
+        after(0.0, move || {
+            if let Some(dock) = me.upgrade() {
+                f(&dock);
+            }
+        });
+    }
+
+    fn save_pins(&self, state: &mut State) {
+        state.pins.save();
+        state.pins_modified = Pins::modified();
+    }
+
+    /// Once a second: the config and pins files, badges, apps still opening, and now and then
+    /// the native Dock's pins.
+    fn poll(&self) {
+        self.check_config();
+        let modified = Pins::modified();
+        if modified != self.state.borrow().pins_modified {
+            let mut state = self.state.borrow_mut();
+            state.pins = Pins::load();
+            state.pins_modified = modified;
+            drop(state);
+            self.rebuild_row();
+        }
+        let polls = {
+            let mut state = self.state.borrow_mut();
+            state.polls += 1;
+            state.polls
+        };
+        if polls % 5 == 0 {
+            let follow = !self.settings.borrow().block_self_pinning;
+            let mut state = self.state.borrow_mut();
+            if state.pins.observe_native(pins::native_dock_apps(), follow) {
+                self.save_pins(&mut state);
+                drop(state);
+                self.rebuild_row();
+            }
+        }
+        let mut changed = false;
+        {
+            let mut surface = self.surface.borrow_mut();
+            for (key, pid) in surface.running() {
+                changed |= surface.set_badge(&key, badges::label(pid));
+            }
+            for key in surface.launching() {
+                let started =
+                    surface.tile(&key).and_then(|tile| tile.app.as_ref()).is_some_and(|app| app.isFinishedLaunching());
+                surface.set_launching(&key, !started);
+                changed = true;
+            }
+        }
+        if changed {
+            self.animate();
+        }
     }
 
     pub fn mouse_down(&self, point: CGPoint, control: bool) {
         if control {
             return self.show_menu_at(point);
         }
-        {
+        let key = {
             let mut surface = self.surface.borrow_mut();
-            let pid = surface.item_at(point).map(|item| item.pid);
-            surface.press(pid);
+            let key = surface.tile_at(point).map(|tile| tile.key.clone());
+            surface.press(key.clone());
+            key
+        };
+        self.state.borrow_mut().drag_start = key.map(|key| (key, point));
+        self.animate();
+    }
+
+    /// A pressed app dragged a few points lifts out of the row and follows the pointer.
+    pub fn mouse_dragged(&self, point: CGPoint) {
+        let pinning = self.settings.borrow().pinning;
+        let mut surface = self.surface.borrow_mut();
+        if !surface.is_dragging() {
+            let Some((key, origin)) = self.state.borrow().drag_start.clone() else { return };
+            if (point.x - origin.x).hypot(point.y - origin.y) < 4.0 || key == row::FINDER {
+                return;
+            }
+            if !surface.begin_drag(&key, point) {
+                return;
+            }
+            surface.shows_label = false;
         }
+        let removable = pinning && surface.dragged().is_some_and(|tile| tile.pinned);
+        surface.drag_to(point, removable);
+        drop(surface);
         self.animate();
     }
 
     pub fn mouse_up(&self, point: CGPoint) {
-        let app = {
+        self.state.borrow_mut().drag_start = None;
+        if self.surface.borrow().is_dragging() {
+            return self.drop_dragged();
+        }
+        let tile = {
             let mut surface = self.surface.borrow_mut();
-            let Some(pressed) = surface.pressed() else { return };
+            let Some(pressed) = surface.pressed().map(str::to_owned) else { return };
             surface.press(None);
-            surface.item_at(point).filter(|item| item.pid == pressed).map(|item| item.app.clone())
+            surface
+                .tile_at(point)
+                .filter(|tile| tile.key == pressed)
+                .map(|tile| (tile.key.clone(), tile.app.clone(), tile.path.clone()))
         };
         self.animate();
-        if let Some(app) = app {
-            actions::open(&app);
+        match tile {
+            Some((_, Some(app), _)) => actions::open(&app),
+            Some((key, None, Some(path))) => self.launch(&key, &path),
+            _ => {}
         }
     }
 
+    /// Opens a pinned app that isn't running, bouncing it until it has.
+    pub fn launch(&self, key: &str, path: &str) {
+        actions::launch(path);
+        self.surface.borrow_mut().set_launching(key, true);
+        self.animate();
+    }
+
+    /// Puts down the dragged app: where it was let go, pinning or moving it, or off the dock,
+    /// unpinning it.
+    fn drop_dragged(&self) {
+        let Some(end) = self.surface.borrow().end_drag() else { return };
+        let pinning = self.settings.borrow().pinning;
+        let mut keep = true;
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(spec) = state.row.iter().find(|spec| spec.key == end.key).cloned() {
+                if end.outside && spec.pinned {
+                    state.pins.remove(&end.key);
+                    // A running app stays, among the running ones.
+                    keep = spec.pid.is_some();
+                    self.save_pins(&mut state);
+                } else {
+                    let rest: Vec<Spec> = state.row.iter().filter(|other| other.key != end.key).cloned().collect();
+                    match row::drop(&rest, &spec, end.index, pinning) {
+                        row::Drop::Pins(keys) => {
+                            let named: Vec<(String, String)> =
+                                spec.path.iter().map(|path| (spec.key.clone(), path.clone())).collect();
+                            state.pins.set_order(&keys, &named);
+                            self.save_pins(&mut state);
+                        }
+                        row::Drop::Running(keys) => state.apps.reorder(&keys),
+                    }
+                }
+            }
+        }
+        {
+            let mut surface = self.surface.borrow_mut();
+            surface.finish_drag(keep);
+            surface.shows_label = true;
+        }
+        self.rebuild_row();
+        self.pointer_moved();
+    }
+
+    pub fn toggle_pin(&self, key: &str, path: &str) {
+        let mut state = self.state.borrow_mut();
+        if state.pins.contains(key) {
+            state.pins.remove(key);
+        } else {
+            state.pins.apps.push(path.to_owned());
+        }
+        self.save_pins(&mut state);
+        drop(state);
+        self.rebuild_row();
+    }
+
+    // Dropping files from elsewhere
+
+    /// Files dragged over the dock: onto an app's icon to open them with it, or, for apps,
+    /// between icons to pin them there. Returns whether a drop here would do anything.
+    pub fn drag_over(&self, point: CGPoint, paths: &[String]) -> bool {
+        let pinning = self.settings.borrow().pinning;
+        let mut surface = self.surface.borrow_mut();
+        let target = surface.icon_at(point).map(|tile| tile.key.clone());
+        let apps = !paths.is_empty() && paths.iter().all(|path| path.trim_end_matches('/').ends_with(".app"));
+        let accept = if target.is_some() {
+            surface.move_gap(None);
+            true
+        } else if pinning && apps && surface.body_contains(point) {
+            let index = surface.insertion_index(point.x);
+            surface.move_gap(Some(index));
+            true
+        } else {
+            surface.move_gap(None);
+            false
+        };
+        surface.hover_key(target);
+        drop(surface);
+        self.animate();
+        accept
+    }
+
+    pub fn drag_left(&self) {
+        {
+            let mut surface = self.surface.borrow_mut();
+            surface.move_gap(None);
+            surface.hover_key(None);
+        }
+        self.rebuild_row();
+        self.animate();
+    }
+
+    pub fn drop_files(&self, point: CGPoint, paths: &[String]) -> bool {
+        let (target, gap) = {
+            let mut surface = self.surface.borrow_mut();
+            let target = surface.icon_at(point).and_then(|tile| {
+                let app = tile.app.as_ref().and_then(|app| app.bundleURL()?.path()).map(|path| path.to_string());
+                app.or_else(|| tile.path.clone())
+            });
+            let gap = surface.gap_index();
+            surface.move_gap(None);
+            surface.hover_key(None);
+            (target, gap)
+        };
+        let done = if let Some(app) = target {
+            actions::open_with(paths, &app);
+            true
+        } else if let Some(index) = gap {
+            let mut state = self.state.borrow_mut();
+            // Among the pins, where the gap was.
+            let mut at = state.row.iter().take(index).filter(|spec| spec.pinned).count();
+            for path in paths {
+                let path = path.trim_end_matches('/').to_owned();
+                let key = pins::key_for_bundle(&path);
+                if let Some(old) = state.pins.apps.iter().position(|pinned| pins::key_for_bundle(pinned) == key) {
+                    state.pins.apps.remove(old);
+                    if old < at {
+                        at -= 1;
+                    }
+                }
+                let at_now = at.min(state.pins.apps.len());
+                state.pins.apps.insert(at_now, path);
+                at = at_now + 1;
+            }
+            self.save_pins(&mut state);
+            true
+        } else {
+            false
+        };
+        self.rebuild_row();
+        done
+    }
+
     pub fn show_menu_at(&self, point: CGPoint) {
-        let target = self.surface.borrow().item_at(point).map(|item| (item.app.clone(), item.center));
+        let target = self.surface.borrow().tile_at(point).map(|tile| {
+            let target =
+                Target { key: tile.key.clone(), app: tile.app.clone(), path: tile.path.clone(), pinned: tile.pinned };
+            (target, tile.center)
+        });
         self.show_menu(target, point);
     }
 
-    fn show_menu(&self, target: Option<(Retained<NSRunningApplication>, f64)>, point: CGPoint) {
+    fn show_menu(&self, target: Option<(Target, f64)>, point: CGPoint) {
+        let pinning = self.settings.borrow().pinning;
         let mut menu = match &target {
-            Some((app, _)) => menu::app_menu(self.mtm, app),
+            Some((target, _)) => menu::app_menu(self.mtm, target, pinning, self.me.clone()),
             None => menu::dock_menu(self.mtm, self.me.clone()),
         };
         self.state.borrow_mut().menu_open = true;
@@ -512,9 +762,13 @@ impl Dock {
 
     fn apply_config(&self, config: Config) {
         let settings = Settings::from_config(&config, Settings::native_icon_size());
+        let repin = settings.pinning != self.settings.borrow().pinning;
         *self.config.borrow_mut() = config;
         *self.settings.borrow_mut() = settings.clone();
         self.surface.borrow_mut().apply(settings);
+        if repin {
+            self.rebuild_row();
+        }
         // A new icon size changes the panel's height.
         let screen = self.state.borrow().screen;
         if let Some(screen) = screen.and_then(|id| self.screen(id)) {
@@ -533,7 +787,7 @@ impl Dock {
             let me = self.me.clone();
             let closing = RcBlock::new(move |_: NonNull<NSNotification>| {
                 if let Some(dock) = me.upgrade() {
-                    dock.set_pinned(false);
+                    dock.hold(false);
                 }
             });
             let observer = unsafe {
@@ -555,13 +809,13 @@ impl Dock {
         };
         NSApplication::sharedApplication(self.mtm).activate();
         window.makeKeyAndOrderFront(None);
-        self.set_pinned(true);
+        self.hold(true);
     }
 
     /// Holds the dock up, on the Settings window's screen, or lets it go.
-    fn set_pinned(&self, pinned: bool) {
-        self.state.borrow_mut().pinned = pinned;
-        if !pinned {
+    fn hold(&self, held: bool) {
+        self.state.borrow_mut().held = held;
+        if !held {
             // Tucks away shortly unless the pointer is near.
             self.pointer_moved();
             return;

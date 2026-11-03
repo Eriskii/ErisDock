@@ -4,14 +4,16 @@ use std::rc::Weak;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
+use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSApplicationDelegate, NSBackingStoreType, NSColor, NSEvent, NSEventModifierFlags, NSPanel,
-    NSResponder, NSView, NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSApplicationDelegate, NSBackingStoreType, NSColor, NSDragOperation, NSDraggingDestination,
+    NSDraggingInfo, NSEvent, NSEventModifierFlags, NSPanel, NSPasteboardTypeFileURL, NSResponder, NSView, NSWindow,
+    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::CGPoint;
 use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSRect, NSString};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSRect, NSString, NSURL};
 use objc2_quartz_core::{CADisplayLink, CALayer};
 
 use crate::dock::Dock;
@@ -53,6 +55,12 @@ define_class!(
             self.ivars().with(|dock| dock.mouse_down(point, control));
         }
 
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            let point = self.point(event);
+            self.ivars().with(|dock| dock.mouse_dragged(point));
+        }
+
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
             let point = self.point(event);
@@ -65,7 +73,47 @@ define_class!(
             self.ivars().with(|dock| dock.show_menu_at(point));
         }
     }
+
+    unsafe impl NSObjectProtocol for DockView {}
+
+    // Files dragged in from elsewhere.
+    unsafe impl NSDraggingDestination for DockView {
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            self.drag_over(sender)
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            self.drag_over(sender)
+        }
+
+        #[unsafe(method(draggingExited:))]
+        fn dragging_exited(&self, _sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+            self.ivars().with(|dock| dock.drag_left());
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            let (point, paths) = (self.convertPoint_fromView(sender.draggingLocation(), None), dragged_paths(sender));
+            let mut done = false;
+            self.ivars().with(|dock| done = dock.drop_files(point, &paths));
+            done
+        }
+    }
 );
+
+/// The files being dragged.
+fn dragged_paths(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
+    let Some(items) = sender.draggingPasteboard().pasteboardItems() else { return Vec::new() };
+    items
+        .iter()
+        .filter_map(|item| {
+            let url = item.stringForType(unsafe { NSPasteboardTypeFileURL })?;
+            NSURL::URLWithString(&url)?.path().map(|path| path.to_string())
+        })
+        .collect()
+}
 
 impl DockView {
     pub fn new(mtm: MainThreadMarker, root: &CALayer) -> Retained<Self> {
@@ -74,7 +122,15 @@ impl DockView {
         // Layer-hosting: the view shows `root` and leaves its sublayers to us.
         this.setLayer(Some(root));
         this.setWantsLayer(true);
+        this.registerForDraggedTypes(&NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]));
         this
+    }
+
+    fn drag_over(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+        let (point, paths) = (self.convertPoint_fromView(sender.draggingLocation(), None), dragged_paths(sender));
+        let mut accept = false;
+        self.ivars().with(|dock| accept = dock.drag_over(point, &paths));
+        if accept { NSDragOperation::Copy } else { NSDragOperation::None }
     }
 
     fn point(&self, event: &NSEvent) -> CGPoint {

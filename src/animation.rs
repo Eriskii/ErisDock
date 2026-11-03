@@ -86,6 +86,8 @@ impl Style {
                 active: expressive_default,
                 label: effects,
                 label_move: expressive_default,
+                slide: expressive_default,
+                bounce: SpringSpec::stiffness(380.0, 0.35),
                 hover_scale: 0.08,
                 hover_lift: 3.0,
                 press_scale: (-0.08, -0.08),
@@ -103,6 +105,8 @@ impl Style {
                 active: SpringSpec::new(0.3, 0.75),
                 label: SpringSpec::new(0.24, 0.8),
                 label_move: SpringSpec::new(0.32, 0.82),
+                slide: SpringSpec::new(0.38, 0.7),
+                bounce: SpringSpec::new(0.42, 0.3),
                 hover_scale: 0.12,
                 hover_lift: 4.0,
                 press_scale: (0.1, -0.16),
@@ -120,6 +124,8 @@ impl Style {
                 active: standard_default,
                 label: effects,
                 label_move: standard_default,
+                slide: standard_default,
+                bounce: SpringSpec::stiffness(380.0, 0.5),
                 hover_scale: 0.06,
                 hover_lift: 2.0,
                 press_scale: (-0.05, -0.05),
@@ -149,6 +155,10 @@ pub struct Animation {
     /// The name above the dock showing, and sliding from icon to icon.
     pub label: SpringSpec,
     pub label_move: SpringSpec,
+    /// An icon sliding into its place after the row is reordered or it's dropped.
+    pub slide: SpringSpec,
+    /// A launching app's icon bouncing.
+    pub bounce: SpringSpec,
     /// How much a hovered icon grows, and how far it lifts.
     pub hover_scale: f64,
     pub hover_lift: f64,

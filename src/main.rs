@@ -3,10 +3,13 @@
 mod actions;
 mod animation;
 mod apps;
+mod badges;
 mod config;
 mod dock;
 mod layout;
 mod menu;
+mod pins;
+mod row;
 mod settings;
 mod settings_window;
 mod shape;

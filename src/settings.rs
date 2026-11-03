@@ -30,6 +30,10 @@ pub struct Settings {
     pub hide_delay: f64,
     /// How far beside the dock the bottom edge still raises it.
     pub trigger_margin: f64,
+    /// Whether pinned apps show, running or not.
+    pub pinning: bool,
+    /// Whether apps that pin themselves to the native Dock are kept out of this one.
+    pub block_self_pinning: bool,
 }
 
 impl Settings {
@@ -63,6 +67,8 @@ impl Settings {
             reveal_delay: config.reveal_delay.unwrap_or(Self::DEFAULT_REVEAL_DELAY).max(0.0),
             hide_delay: config.hide_delay.unwrap_or(Self::DEFAULT_HIDE_DELAY).max(0.0),
             trigger_margin: config.trigger_margin.unwrap_or(48.0).max(0.0),
+            pinning: config.pinning.unwrap_or(true),
+            block_self_pinning: config.block_self_pinning.unwrap_or(true),
         }
     }
 

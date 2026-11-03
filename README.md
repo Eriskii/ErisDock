@@ -11,18 +11,26 @@ once the pointer leaves. Rust, on AppKit and Core Animation through the `objc2` 
   all with Figma's corner smoothing. Icons ride up with its top edge and fade in on the way. It
   stays up while the pointer is near and tucks away shortly after it leaves. An edge another
   screen carries on below doesn't raise it.
-- **Icons**: every app with a regular activation policy, Finder first and the rest in the order
-  they launched. A new app pops in at the end and a quitting one shrinks out of the row, its
-  neighbours closing over. Each running app has a dot beneath it, which stretches into a bar
-  under the frontmost app; hidden apps are dimmed. Pointing at an icon lifts it out of the dock
-  and shows the app's name above it.
+- **Icons**: Finder first, then the pinned apps, running or not, then the other running
+  apps in the order they launched. A new app pops in and a quitting one shrinks out of the row,
+  its neighbours closing over. Running apps have a dot beneath them, which stretches into a bar
+  under the frontmost app; hidden apps are dimmed. Apps' notification badges show at their
+  icons' corners. Pointing at an icon lifts it out of the dock and shows the app's name above
+  it.
 - **Clicking** an icon presses it in and brings its app forward as the native Dock does: unhidden,
-  active, and asked to reopen, so an app with no windows open makes one.
-- **Menus**, on right-click or Control-click, open just above the icon, after the native Dock's: the app's windows (a ◆
-  for minimized ones; choosing one brings it forward), **Options › Show in Finder**, **Show All
-  Windows** (App Exposé), **Hide** and **Quit**, which Option turns into **Hide Others** and
-  **Force Quit**. Finder's has **New Finder Window** and no Quit. Right-clicking the dock between
-  icons offers **Settings…**, **Open at Login** and **Quit ErisDock**.
+  active, and asked to reopen, so an app with no windows open makes one. A pinned app that isn't
+  running opens, bouncing until it has.
+- **Dragging** an app moves it along the row, the others making room; dropping a running app
+  among the pinned ones pins it. Dragged up off the dock, a pinned app is unpinned when let go.
+  An app dragged in from Finder and dropped between icons is pinned there, and files dropped on
+  an app's icon open with it.
+- **Menus**, on right-click or Control-click, open just above the icon, after the native
+  Dock's: the app's windows (a ◆ for minimized ones; choosing one brings it forward),
+  **Options** (**Keep in Dock**, **Show in Finder**), **Show All Windows** (App Exposé),
+  **Hide** and **Quit**, which Option turns into **Hide Others** and **Force Quit**. A pinned
+  app that isn't running has **Options** and **Open**. Finder's has **New Finder Window** and no
+  Quit. Right-clicking the dock between icons offers **Settings…**, **Open at Login** and
+  **Quit ErisDock**.
 
 The window list needs ErisDock allowed under System Settings › Privacy & Security ›
 Accessibility; until it is, menus offer **Allow Window List…** in its place. Show All Windows asks
@@ -45,6 +53,21 @@ file. `cargo run -- --snapshot dock.png [--style squishy]` draws the dock rising
 pressed and tucking away, frame by frame, into one PNG, with the apps that are running, without
 putting anything on screen.
 
+## Pinned apps
+
+Pinned apps are kept in `~/.config/erisdock/pinned.toml`, beside the config file. The first time
+ErisDock runs, the native Dock's pinned apps become its own. After that only you change ErisDock's
+pins: by dragging, with **Keep in Dock**, or by editing the file, which ErisDock picks up.
+
+Apps pin themselves to the native Dock, through installers and "Keep in Dock?" prompts. ErisDock
+notices when they do, and leaves them out unless **Never let apps pin themselves** is turned off
+in its settings (`block_self_pinning = false`). Pinning can be turned off altogether
+(`pinning = false`), leaving just the running apps; the pins stay in their file for when it's
+turned back on.
+
+Badges are read through LaunchServices' private `_LSCopyApplicationInformation`, which
+ErisDock looks up when it starts and goes without if it's gone.
+
 ## The native Dock
 
 ErisDock leaves the native Dock running: it draws Mission Control, App Exposé and Launchpad.
@@ -56,8 +79,8 @@ minutes), so it never comes up under the pointer. `restore` puts its usual delay
 **Settings…**, from right-clicking the dock between icons (or opening ErisDock again while
 it runs), opens a small window holding the dock up beside it, so each change shows as it's
 made: the animation, the icon size, corner smoothing, how long the pointer rests on the edge
-before the dock rises and how long it's away before the dock tucks back in, and opening at
-login. **Replay Animation** tucks the dock away and raises it again.
+before the dock rises and how long it's away before the dock tucks back in, pinning, and
+opening at login. **Replay Animation** tucks the dock away and raises it again.
 
 Everything is kept in `~/.config/erisdock/config.toml` (or under `$XDG_CONFIG_HOME`), written
 the first time ErisDock runs with every setting described and the defaults commented out.
@@ -72,6 +95,10 @@ The animations come as sets:
   together, quick and direct, with a little give as it lands; icons pop in with a small
   bounce and shrink slightly when pressed.
 - **Standard**: Material 3's standard springs, straight up and out with no bounce.
+
+## Roadmap
+
+[ROADMAP.md](ROADMAP.md) lists what's left to match the native Dock.
 
 ## License
 

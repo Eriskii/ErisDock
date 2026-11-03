@@ -29,6 +29,8 @@ pub struct SettingsWindow {
     smoothing: Slider,
     reveal_delay: Slider,
     hide_delay: Slider,
+    pinning: Retained<NSButton>,
+    block_self_pinning: Retained<NSButton>,
     login: Retained<NSButton>,
     _actions: Vec<Retained<Action>>,
 }
@@ -95,6 +97,8 @@ impl SettingsWindow {
         let smoothing = Slider::new(mtm, 0.0, 1.0, |smoothing| format!("{smoothing:.2}"));
         let reveal_delay = Slider::new(mtm, 0.0, 0.5, |seconds| format!("{seconds:.2} s"));
         let hide_delay = Slider::new(mtm, 0.0, 2.0, |seconds| format!("{seconds:.2} s"));
+        let pinning = checkbox(mtm, "Keep pinned apps in the dock");
+        let block_self_pinning = checkbox(mtm, "Never let apps pin themselves");
         let login = checkbox(mtm, "Open at login");
         let replay =
             unsafe { NSButton::buttonWithTitle_target_action(ns_string!("Replay Animation"), None, None, mtm) };
@@ -122,6 +126,8 @@ impl SettingsWindow {
             [label("Corner smoothing:"), smoothing.row(mtm)],
             [label("Rise after:"), reveal_delay.row(mtm)],
             [label("Tuck away after:"), hide_delay.row(mtm)],
+            [label("Pinning:"), view(&pinning)],
+            [empty(), view(&block_self_pinning)],
             [empty(), view(&login)],
             [empty(), Retained::into_super(buttons)],
             [empty(), view(&note)],
@@ -201,6 +207,20 @@ impl SettingsWindow {
                 dock.edit_config(|config| config.hide_delay = Some(round(slider.doubleValue())));
             }),
         );
+        let checkbox = pinning.clone();
+        connect(
+            &pinning,
+            Box::new(move |dock| {
+                dock.edit_config(|config| config.pinning = Some(checkbox.state() == NSControlStateValueOn))
+            }),
+        );
+        let checkbox = block_self_pinning.clone();
+        connect(
+            &block_self_pinning,
+            Box::new(move |dock| {
+                dock.edit_config(|config| config.block_self_pinning = Some(checkbox.state() == NSControlStateValueOn))
+            }),
+        );
         let checkbox = login.clone();
         connect(
             &login,
@@ -221,6 +241,8 @@ impl SettingsWindow {
             smoothing,
             reveal_delay,
             hide_delay,
+            pinning,
+            block_self_pinning,
             login,
             _actions: actions,
         }
@@ -237,6 +259,9 @@ impl SettingsWindow {
         self.smoothing.set(settings.smoothing);
         self.reveal_delay.set(settings.reveal_delay);
         self.hide_delay.set(settings.hide_delay);
+        self.pinning.setState(state(settings.pinning));
+        self.block_self_pinning.setState(state(settings.block_self_pinning));
+        self.block_self_pinning.setEnabled(settings.pinning);
         self.login.setState(if LoginItem::is_enabled() { NSControlStateValueOn } else { NSControlStateValueOff });
     }
 }
@@ -244,6 +269,10 @@ impl SettingsWindow {
 fn view<T: AsRef<NSView>>(control: &Retained<T>) -> Retained<NSView> {
     let view: &NSView = (**control).as_ref();
     view.retain()
+}
+
+fn state(on: bool) -> isize {
+    if on { NSControlStateValueOn } else { NSControlStateValueOff }
 }
 
 fn checkbox(mtm: MainThreadMarker, title: &str) -> Retained<NSButton> {
