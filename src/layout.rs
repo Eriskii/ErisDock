@@ -1,5 +1,6 @@
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 
+use crate::indicators::DIM;
 use crate::settings::Settings;
 use crate::shape::DockShape;
 
@@ -9,9 +10,13 @@ pub struct Motion {
     pub appear: f64,
     pub hover: f64,
     pub press: f64,
-    pub active: f64,
-    /// 1 while the app runs, showing its dot.
-    pub running: f64,
+    /// The pills of the mark under the icon: where they sit and how long they are, in dot
+    /// sizes from the middle.
+    pub pills: [(f64, f64); 3],
+    /// 1 while the mark shows.
+    pub mark_shown: f64,
+    /// 1 for a bright mark, 0 for a dim one.
+    pub mark_bright: f64,
     /// How far the icon is from its slot, sliding back into it after the row is reordered.
     pub shift: (f64, f64),
     /// How high a launching app's icon has bounced, in icon heights.
@@ -30,9 +35,10 @@ pub struct Placement {
     /// The middle of the icon's foot; it scales from there.
     pub icon_base: CGPoint,
     pub icon_scale: (f64, f64),
-    pub dot_position: CGPoint,
-    pub dot_width: f64,
-    pub dot_opacity: f64,
+    /// The middle of the mark, and its pills' offsets from there and lengths.
+    pub mark_position: CGPoint,
+    pub pills: [(f64, f64); 3],
+    pub mark_opacity: f64,
     pub opacity: f64,
 }
 
@@ -88,9 +94,9 @@ pub fn place(
                     slot_base.y + m.shift.1 + a.hover_lift * m.hover + m.bounce * s.icon_size,
                 ),
                 icon_scale: (grow * (1.0 + a.press_scale.0 * m.press), grow * (1.0 + a.press_scale.1 * m.press)),
-                dot_position: CGPoint::new(center, height - s.height() + s.bottom_padding * 0.4),
-                dot_width: s.dot_size * (1.0 + 2.5 * m.active) * pinch,
-                dot_opacity: fade * m.running.clamp(0.0, 1.0) * (0.45 + 0.55 * m.active),
+                mark_position: CGPoint::new(center, height - s.height() + s.bottom_padding * 0.4),
+                pills: m.pills.map(|(offset, length)| (offset * s.dot_size * pinch, length * s.dot_size * pinch)),
+                mark_opacity: fade * m.mark_shown.clamp(0.0, 1.0) * (DIM + (1.0 - DIM) * m.mark_bright.clamp(0.0, 1.0)),
                 opacity: fade,
             }
         })
@@ -103,7 +109,7 @@ mod tests {
     use super::*;
 
     fn settled(count: usize) -> Vec<Motion> {
-        vec![Motion { appear: 1.0, running: 1.0, ..Default::default() }; count]
+        vec![Motion { appear: 1.0, mark_shown: 1.0, ..Default::default() }; count]
     }
 
     #[test]

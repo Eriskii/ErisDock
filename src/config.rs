@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, value};
 
 use crate::animation::Style;
+use crate::indicators::{IndicatorConfig, Status};
 
 /// The config file, `~/.config/erisdock/config.toml`. Anything left out takes its default; the
 /// sizes' defaults scale with the icon size.
@@ -27,6 +28,7 @@ pub struct Config {
     pub trigger_margin: Option<f64>,
     pub pinning: Option<bool>,
     pub block_self_pinning: Option<bool>,
+    pub indicators: IndicatorConfig,
 }
 
 /// What a new config file says: every setting, the ones left at their defaults commented out.
@@ -67,6 +69,17 @@ animation = "squishy"
 # Apps add themselves to the native Dock (installers, "Keep in Dock?" prompts). ErisDock never
 # follows them unless this is turned off; only you pin apps to it.
 # block_self_pinning = true
+
+# The marks under running apps' icons, by what their windows are doing: "dot", "two-dots",
+# "three-dots", "bar" or "none", with "dim-" in front for a dim one, as in "dim-dot". "Here" is
+# the desktop on screen.
+# [indicators]
+# focused = "bar"               # the app in front
+# open = "dot"                  # a window open here
+# minimized = "dim-two-dots"    # windows here, all minimized
+# other_desktops = "dim-dot"    # windows only on other desktops
+# no_windows = "dim-dot"        # running without windows
+# hidden = "dim-dot"            # hidden with ⌘H
 "#;
 
 pub fn path() -> PathBuf {
@@ -142,6 +155,22 @@ pub fn update(text: &str, config: &Config) -> Result<String, String> {
             }
         }
     }
+    let marks: Vec<_> = Status::ALL.iter().map(|status| (status.key(), config.indicators.get(*status))).collect();
+    if document.contains_key("indicators") || marks.iter().any(|(_, mark)| mark.is_some()) {
+        let table = document.entry("indicators").or_insert(toml_edit::table());
+        let table = table.as_table_mut().ok_or("indicators should be a table")?;
+        for (key, mark) in marks {
+            match mark {
+                Some(mark) => table[key] = value(mark.to_string()),
+                None => {
+                    table.remove(key);
+                }
+            }
+        }
+        if table.is_empty() {
+            document.remove("indicators");
+        }
+    }
     for (key, number) in numbers {
         match number {
             // Whole numbers are written as integers, which read back as floats all the same.
@@ -185,15 +214,30 @@ mod tests {
             icon_size: Some(40.0),
             hide_delay: Some(0.5),
             block_self_pinning: Some(false),
+            indicators: IndicatorConfig { minimized: Some("bar".parse().unwrap()), ..Default::default() },
             ..Config::default()
         };
         let text = update(TEMPLATE, &config).unwrap();
         assert!(text.contains("# ErisDock's settings."));
         assert!(text.contains("icon_size = 40\n"));
+        assert!(text.contains("[indicators]\nminimized = \"bar\"\n"));
         assert_eq!(parse(&text).unwrap(), config);
 
         let cleared = update(&text, &Config::default()).unwrap();
+        assert!(!cleared.contains("\n[indicators]"));
         assert!(!cleared.contains("icon_size = 40"));
         assert_eq!(parse(&cleared).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn settings_added_after_the_indicators_stay_out_of_their_table() {
+        let config = Config {
+            indicators: IndicatorConfig { hidden: Some("none".parse().unwrap()), ..Default::default() },
+            ..Config::default()
+        };
+        let text = update("animation = \"squishy\"\n", &config).unwrap();
+        let config = Config { icon_size: Some(30.0), ..config };
+        let text = update(&text, &config).unwrap();
+        assert_eq!(parse(&text).unwrap(), config, "{text}");
     }
 }

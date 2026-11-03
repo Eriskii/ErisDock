@@ -12,6 +12,7 @@ use objc2_foundation::{NSDictionary, NSString};
 use crate::animation::Style;
 use crate::apps::AppList;
 use crate::config;
+use crate::indicators::Presence;
 use crate::pins::Pins;
 use crate::row;
 use crate::settings::Settings;
@@ -35,7 +36,17 @@ pub fn write(path: &Path, style: Option<Style>) {
     apps.apps.truncate(8);
     let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier());
     let row = row::desired(&Pins::load().pinned(), &apps.running(), surface.settings.pinning);
-    surface.set_row(&row, &apps.by_pid(), frontmost, false);
+    surface.set_row(&row, &apps.by_pid(), false);
+    // Every kind of mark, whatever the apps are really up to.
+    let made_up = [
+        Presence { open: true, ..Default::default() },
+        Presence { minimized: true, ..Default::default() },
+        Presence { elsewhere: true, ..Default::default() },
+        Presence::default(),
+    ];
+    let pids: Vec<i32> = apps.apps.iter().map(|app| app.processIdentifier()).collect();
+    let presence = |shift: usize| pids.iter().enumerate().map(|(i, pid)| (*pid, made_up[(i + shift) % 4])).collect();
+    surface.set_statuses(&presence(0), frontmost, false);
     surface.render();
 
     let mut frames = Vec::new();
@@ -58,6 +69,9 @@ pub fn write(path: &Path, style: Option<Style>) {
         surface.press(None);
         surface.set_badge(&key, Some("3".into()));
         run(&mut surface, 0.3, 10);
+        // Each mark turns into the next.
+        surface.set_statuses(&presence(1), None, true);
+        run(&mut surface, 0.4, 4);
         surface.hover(None);
     }
     // Drag the second app to the end of the row and let go.

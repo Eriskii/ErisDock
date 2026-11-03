@@ -3,6 +3,7 @@ use objc2_foundation::{NSUserDefaults, ns_string};
 
 use crate::animation::{Animation, Style};
 use crate::config::Config;
+use crate::indicators::Indicators;
 
 /// Sizes, timings and animations, worked out from the config file. Sizes scale from the icon
 /// size, which is the native Dock's unless the config sets one.
@@ -34,6 +35,8 @@ pub struct Settings {
     pub pinning: bool,
     /// Whether apps that pin themselves to the native Dock are kept out of this one.
     pub block_self_pinning: bool,
+    /// The mark under each running app's icon, by what its windows are doing.
+    pub indicators: Indicators,
 }
 
 impl Settings {
@@ -69,6 +72,7 @@ impl Settings {
             trigger_margin: config.trigger_margin.unwrap_or(48.0).max(0.0),
             pinning: config.pinning.unwrap_or(true),
             block_self_pinning: config.block_self_pinning.unwrap_or(true),
+            indicators: Indicators::from_config(&config.indicators),
         }
     }
 

@@ -83,7 +83,7 @@ impl Style {
                 leave: effects,
                 hover: expressive_fast,
                 press: SpringSpec { damping: 0.7, ..standard_fast },
-                active: expressive_default,
+                marks: expressive_default,
                 label: effects,
                 label_move: expressive_default,
                 slide: expressive_default,
@@ -102,7 +102,7 @@ impl Style {
                 leave: SpringSpec::new(0.3, 1.0),
                 hover: SpringSpec::new(0.3, 0.55),
                 press: SpringSpec::new(0.16, 0.5),
-                active: SpringSpec::new(0.3, 0.75),
+                marks: SpringSpec::new(0.3, 0.75),
                 label: SpringSpec::new(0.24, 0.8),
                 label_move: SpringSpec::new(0.32, 0.82),
                 slide: SpringSpec::new(0.38, 0.7),
@@ -121,7 +121,7 @@ impl Style {
                 leave: effects,
                 hover: standard_fast,
                 press: standard_fast,
-                active: standard_default,
+                marks: standard_default,
                 label: effects,
                 label_move: standard_default,
                 slide: standard_default,
@@ -150,8 +150,8 @@ pub struct Animation {
     pub leave: SpringSpec,
     pub hover: SpringSpec,
     pub press: SpringSpec,
-    /// The frontmost app's dot stretching into a bar.
-    pub active: SpringSpec,
+    /// The marks under an icon changing from one to another.
+    pub marks: SpringSpec,
     /// The name above the dock showing, and sliding from icon to icon.
     pub label: SpringSpec,
     pub label_move: SpringSpec,

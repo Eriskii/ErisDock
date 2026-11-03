@@ -6,7 +6,7 @@ launcher, so those aren't on the list.
 
 ## Done
 
-- Running apps, with dots, the frontmost app's stretched into a bar, hidden apps dimmed.
+- Running apps, hidden ones dimmed.
 - Clicking an app brings it forward as the Dock does, reopening it when it has no windows.
 - Menus: windows, Options, Show All Windows, Hide / Hide Others, Quit / Force Quit.
 - Pinned apps ("Keep in Dock"), imported once from the native Dock, with a switch to turn pinning
@@ -14,13 +14,13 @@ launcher, so those aren't on the list.
 - Drag and drop: drag apps to reorder them, drag a pinned app up off the dock to unpin it, drop
   an app from Finder between icons to pin it, drop files on an app to open them with it.
 - Notification badges.
+- Marks under icons for what each app's windows are doing (focused, open here, minimized here,
+  on other desktops, no windows, hidden), each picked from dots, bars and nothing.
 - Bouncing while a pinned app opens.
 - Settings: a config file and a window, and three sets of animations.
 
 ## Everyday gaps
 
-- **Trash** at the end of the row: open it, Empty Trash from its menu, drop files on it to
-  delete them, and an Eject icon while a disk is dragged.
 - **Bouncing for attention**, when an app asks for it (`requestUserAttention`). Those requests
   go to the native Dock, so catching them needs digging.
 - **Bouncing on any launch**, not just from the dock: apps opened from Spotlight or Finder

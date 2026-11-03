@@ -15,6 +15,7 @@ use crate::actions::LoginItem;
 use crate::animation::Style;
 use crate::config::{self, Config};
 use crate::dock::Dock;
+use crate::indicators::{Indicator, Status};
 use crate::menu::Action;
 use crate::settings::Settings;
 
@@ -29,6 +30,8 @@ pub struct SettingsWindow {
     smoothing: Slider,
     reveal_delay: Slider,
     hide_delay: Slider,
+    /// The mark under icons for each status.
+    marks: Vec<(Status, Retained<NSPopUpButton>)>,
     pinning: Retained<NSButton>,
     block_self_pinning: Retained<NSButton>,
     login: Retained<NSButton>,
@@ -97,6 +100,20 @@ impl SettingsWindow {
         let smoothing = Slider::new(mtm, 0.0, 1.0, |smoothing| format!("{smoothing:.2}"));
         let reveal_delay = Slider::new(mtm, 0.0, 0.5, |seconds| format!("{seconds:.2} s"));
         let hide_delay = Slider::new(mtm, 0.0, 2.0, |seconds| format!("{seconds:.2} s"));
+        let marks: Vec<_> = Status::ALL
+            .iter()
+            .map(|status| {
+                let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
+                let titles: Vec<_> = Indicator::ALL.iter().map(|mark| NSString::from_str(&mark.title())).collect();
+                popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+                (*status, popup)
+            })
+            .collect();
+        let marks_note = small(NSTextField::wrappingLabelWithString(
+            ns_string!("The marks under running apps. “Here” is the desktop on screen."),
+            mtm,
+        ));
+        marks_note.setPreferredMaxLayoutWidth(264.0);
         let pinning = checkbox(mtm, "Keep pinned apps in the dock");
         let block_self_pinning = checkbox(mtm, "Never let apps pin themselves");
         let login = checkbox(mtm, "Open at login");
@@ -118,7 +135,7 @@ impl SettingsWindow {
             Retained::into_super(Retained::into_super(NSTextField::labelWithString(&NSString::from_str(text), mtm)))
         };
         let empty = || NSGridCell::emptyContentView(mtm);
-        let rows: Vec<[Retained<NSView>; 2]> = vec![
+        let mut rows: Vec<[Retained<NSView>; 2]> = vec![
             [label("Animation:"), view(&style)],
             [empty(), view(&summary)],
             [label("Icon size:"), icon_size.row(mtm)],
@@ -126,12 +143,16 @@ impl SettingsWindow {
             [label("Corner smoothing:"), smoothing.row(mtm)],
             [label("Rise after:"), reveal_delay.row(mtm)],
             [label("Tuck away after:"), hide_delay.row(mtm)],
+        ];
+        rows.extend(marks.iter().map(|(status, popup)| [label(status.title()), view(popup)]));
+        rows.extend([
+            [empty(), view(&marks_note)],
             [label("Pinning:"), view(&pinning)],
             [empty(), view(&block_self_pinning)],
             [empty(), view(&login)],
             [empty(), Retained::into_super(buttons)],
             [empty(), view(&note)],
-        ];
+        ]);
         let rows: Vec<_> = rows.iter().map(|row| NSArray::from_retained_slice(row)).collect();
         let grid = NSGridView::gridViewWithViews(&NSArray::from_retained_slice(&rows), mtm);
         grid.setRowSpacing(10.0);
@@ -207,6 +228,16 @@ impl SettingsWindow {
                 dock.edit_config(|config| config.hide_delay = Some(round(slider.doubleValue())));
             }),
         );
+        for (status, popup) in &marks {
+            let (status, popup_) = (*status, popup.clone());
+            connect(
+                popup,
+                Box::new(move |dock| {
+                    let mark = Indicator::ALL.get(popup_.indexOfSelectedItem().max(0) as usize).copied();
+                    dock.edit_config(|config| config.indicators.set(status, mark));
+                }),
+            );
+        }
         let checkbox = pinning.clone();
         connect(
             &pinning,
@@ -241,6 +272,7 @@ impl SettingsWindow {
             smoothing,
             reveal_delay,
             hide_delay,
+            marks,
             pinning,
             block_self_pinning,
             login,
@@ -259,6 +291,10 @@ impl SettingsWindow {
         self.smoothing.set(settings.smoothing);
         self.reveal_delay.set(settings.reveal_delay);
         self.hide_delay.set(settings.hide_delay);
+        for (status, popup) in &self.marks {
+            let mark = settings.indicators.get(*status);
+            popup.selectItemAtIndex(Indicator::ALL.iter().position(|each| *each == mark).unwrap_or(0) as isize);
+        }
         self.pinning.setState(state(settings.pinning));
         self.block_self_pinning.setState(state(settings.block_self_pinning));
         self.block_self_pinning.setEnabled(settings.pinning);

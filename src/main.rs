@@ -6,6 +6,7 @@ mod apps;
 mod badges;
 mod config;
 mod dock;
+mod indicators;
 mod layout;
 mod menu;
 mod pins;
@@ -17,6 +18,7 @@ mod snapshot;
 mod spring;
 mod surface;
 mod view;
+mod windows;
 
 use std::path::Path;
 use std::rc::Rc;
@@ -34,6 +36,11 @@ fn main() {
         let style = style
             .and_then(|name| animation::Style::ALL.into_iter().find(|style| style.title().eq_ignore_ascii_case(name)));
         snapshot::write(Path::new(path), style);
+        return;
+    }
+
+    if arguments.iter().any(|argument| argument == "--windows") {
+        windows::print();
         return;
     }
 

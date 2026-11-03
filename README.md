@@ -13,8 +13,8 @@ once the pointer leaves. Rust, on AppKit and Core Animation through the `objc2` 
   screen carries on below doesn't raise it.
 - **Icons**: Finder first, then the pinned apps, running or not, then the other running
   apps in the order they launched. A new app pops in and a quitting one shrinks out of the row,
-  its neighbours closing over. Running apps have a dot beneath them, which stretches into a bar
-  under the frontmost app; hidden apps are dimmed. Apps' notification badges show at their
+  its neighbours closing over. Running apps have a mark beneath them saying what their windows
+  are up to (see *Marks*); hidden apps are dimmed. Apps' notification badges show at their
   icons' corners. Pointing at an icon lifts it out of the dock and shows the app's name above
   it.
 - **Clicking** an icon presses it in and brings its app forward as the native Dock does: unhidden,
@@ -50,8 +50,9 @@ with a lasting identity instead.
 
 `cargo test` checks the springs, the outline, the layout, the animation sets and the config
 file. `cargo run -- --snapshot dock.png [--style squishy]` draws the dock rising, hovered,
-pressed and tucking away, frame by frame, into one PNG, with the apps that are running, without
-putting anything on screen.
+pressed, its marks changing and tucking away, frame by frame, into one PNG, with the apps that
+are running, without putting anything on screen. `cargo run -- --windows` lists the running
+apps with what ErisDock makes of their windows and the mark each gets.
 
 ## Pinned apps
 
@@ -68,6 +69,31 @@ turned back on.
 Badges are read through LaunchServices' private `_LSCopyApplicationInformation`, which
 ErisDock looks up when it starts and goes without if it's gone.
 
+## Marks
+
+The mark under a running app's icon says what it's up to, taking the first of these that fits:
+
+| Status | Config key | Default |
+| --- | --- | --- |
+| Hidden (⌘H) | `hidden` | dim dot |
+| Focused, the app in front | `focused` | bright bar |
+| A window open on the desktop on screen | `open` | bright dot |
+| Windows on that desktop, all minimized | `minimized` | two dim dots |
+| Windows only on other desktops | `other_desktops` | dim dot |
+| No windows | `no_windows` | dim dot |
+
+Each can be a dot, two dots, three dots or a bar, bright or dim, or nothing, picked in the
+settings window or in the config's `[indicators]` table (`minimized = "dim-two-dots"`). A mark
+is three pills that slide together and apart, so one turns into another as an app's windows
+change.
+
+Where windows are comes from the window server, through SkyLight's private calls, which need no
+permissions: each window's desktops, whether it's ordered in, and the tag it carries while
+minimized. ErisDock looks them up when it starts and shows every app as windowless if they're
+gone. With more than one display, every display's current desktop counts as here. Marks catch
+up when the dock rises, when the desktop changes, when apps launch, quit, activate or hide, and
+once a second while the dock is up.
+
 ## The native Dock
 
 ErisDock leaves the native Dock running: it draws Mission Control, App Exposé and Launchpad.
@@ -79,8 +105,8 @@ minutes), so it never comes up under the pointer. `restore` puts its usual delay
 **Settings…**, from right-clicking the dock between icons (or opening ErisDock again while
 it runs), opens a small window holding the dock up beside it, so each change shows as it's
 made: the animation, the icon size, corner smoothing, how long the pointer rests on the edge
-before the dock rises and how long it's away before the dock tucks back in, pinning, and
-opening at login. **Replay Animation** tucks the dock away and raises it again.
+before the dock rises and how long it's away before the dock tucks back in, the marks under
+icons, pinning, and opening at login. **Replay Animation** tucks the dock away and raises it again.
 
 Everything is kept in `~/.config/erisdock/config.toml` (or under `$XDG_CONFIG_HOME`), written
 the first time ErisDock runs with every setting described and the defaults commented out.

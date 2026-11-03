@@ -9,9 +9,10 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationDidChangeScreenParametersNotification, NSEvent, NSEventMask, NSScreen,
-    NSWindowWillCloseNotification, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
-    NSWorkspaceDidHideApplicationNotification, NSWorkspaceDidLaunchApplicationNotification,
-    NSWorkspaceDidTerminateApplicationNotification, NSWorkspaceDidUnhideApplicationNotification,
+    NSWindowWillCloseNotification, NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
+    NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidHideApplicationNotification,
+    NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification,
+    NSWorkspaceDidUnhideApplicationNotification,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
@@ -31,6 +32,7 @@ use crate::settings::Settings;
 use crate::settings_window::SettingsWindow;
 use crate::surface::Surface;
 use crate::view::{AppsObserver, DockPanel, DockView, Ticker};
+use crate::windows;
 
 /// Raises the dock when the pointer reaches the bottom edge of a screen near where the dock
 /// sits, and tucks it back in once the pointer has left.
@@ -149,6 +151,11 @@ impl Dock {
         for name in names {
             observers.push(self.observe(&workspace.notificationCenter(), name, Dock::apps_changed));
         }
+        observers.push(self.observe(
+            &workspace.notificationCenter(),
+            unsafe { NSWorkspaceActiveSpaceDidChangeNotification },
+            Dock::windows_changed,
+        ));
         observers.push(self.observe(
             &NSNotificationCenter::defaultCenter(),
             unsafe { NSApplicationDidChangeScreenParametersNotification },
@@ -321,6 +328,8 @@ impl Dock {
             surface.bounds = self.view.bounds();
             surface.set_scale(screen.backingScaleFactor());
             surface.set_risen(true);
+            // Rising from out of sight, it shows how things are now rather than catching up.
+            update_statuses(&mut surface, self.panel.isVisible());
         }
         self.panel.orderFrontRegardless();
         self.animate();
@@ -442,12 +451,23 @@ impl Dock {
             return;
         }
         let row = row::desired(&state.pins.pinned(), &state.apps.running(), self.settings.borrow().pinning);
-        let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier());
-        surface.set_row(&row, &state.apps.by_pid(), frontmost, self.panel.isVisible());
+        let animated = self.panel.isVisible();
+        surface.set_row(&row, &state.apps.by_pid(), animated);
+        update_statuses(&mut surface, animated);
         state.row = row;
         state.row_dirty = false;
         drop((state, surface));
         self.animate();
+    }
+
+    /// Brings the marks under the icons up to date, after windows may have moved, been
+    /// minimized or closed.
+    fn windows_changed(&self) {
+        let Ok(mut surface) = self.surface.try_borrow_mut() else { return self.later(Dock::windows_changed) };
+        if update_statuses(&mut surface, self.panel.isVisible()) {
+            drop(surface);
+            self.animate();
+        }
     }
 
     /// Runs `f` once whatever is under way has finished.
@@ -465,8 +485,8 @@ impl Dock {
         state.pins_modified = Pins::modified();
     }
 
-    /// Once a second: the config and pins files, badges, apps still opening, and now and then
-    /// the native Dock's pins.
+    /// Once a second: the config and pins files, badges, apps still opening, windows while the
+    /// dock is up, and now and then the native Dock's pins.
     fn poll(&self) {
         self.check_config();
         let modified = Pins::modified();
@@ -494,6 +514,10 @@ impl Dock {
         let mut changed = false;
         {
             let mut surface = self.surface.borrow_mut();
+            // Nobody sees the marks while the dock is away; they're caught up as it rises.
+            if self.panel.isVisible() {
+                changed |= update_statuses(&mut surface, true);
+            }
             for (key, pid) in surface.running() {
                 changed |= surface.set_badge(&key, badges::label(pid));
             }
@@ -849,6 +873,14 @@ impl Dock {
     fn screen(&self, id: u32) -> Option<Retained<NSScreen>> {
         NSScreen::screens(self.mtm).iter().find(|screen| display_id(screen) == Some(id))
     }
+}
+
+/// Marks each running app in `surface` with what its windows are doing. Returns whether any
+/// mark changed.
+fn update_statuses(surface: &mut Surface, animated: bool) -> bool {
+    let pids = surface.running().into_iter().map(|(_, pid)| pid).collect();
+    let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier());
+    surface.set_statuses(&windows::survey(&pids), frontmost, animated)
 }
 
 fn display_id(screen: &NSScreen) -> Option<u32> {

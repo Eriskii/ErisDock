@@ -16,6 +16,8 @@ use objc2_quartz_core::{
     kCAGravityResizeAspect, kCATruncationEnd,
 };
 
+use crate::animation::SpringSpec;
+use crate::indicators::{Indicator, Presence, Status};
 use crate::layout::{self, Motion, Placement};
 use crate::row::{FINDER, Spec};
 use crate::settings::Settings;
@@ -31,8 +33,88 @@ struct Badge {
     shown: Spring,
 }
 
+/// The mark under a running app's icon: three pills, which slide together into one dot or a
+/// bar and apart into two or three dots, in a layer that fades them as one.
+struct Mark {
+    layer: Retained<CALayer>,
+    pills: [Retained<CALayer>; 3],
+    indicator: Option<Indicator>,
+    offsets: [Spring; 3],
+    lengths: [Spring; 3],
+    shown: Spring,
+    bright: Spring,
+}
+
+impl Mark {
+    fn new(spec: SpringSpec, color: &CGColor, scale: f64) -> Self {
+        let layer = CALayer::new();
+        // Pills on top of each other fade as one shape, not as layers showing through.
+        layer.setAllowsGroupOpacity(true);
+        let pills = std::array::from_fn(|_| {
+            let pill = CALayer::new();
+            pill.setBackgroundColor(Some(color));
+            pill.setContentsScale(scale);
+            layer.addSublayer(&pill);
+            pill
+        });
+        Self {
+            layer,
+            pills,
+            indicator: None,
+            offsets: std::array::from_fn(|_| spec.spring(0.0)),
+            lengths: std::array::from_fn(|_| spec.spring(1.0)),
+            shown: spec.spring(0.0),
+            bright: spec.spring(0.0),
+        }
+    }
+
+    fn springs(&mut self) -> impl Iterator<Item = &mut Spring> {
+        self.offsets.iter_mut().chain(&mut self.lengths).chain([&mut self.shown, &mut self.bright])
+    }
+
+    fn is_settled(&self) -> bool {
+        self.offsets.iter().chain(&self.lengths).chain([&self.shown, &self.bright]).all(Spring::is_resting)
+    }
+
+    /// Turns into `indicator`, or fades away with none. Returns whether that's a change.
+    fn set(&mut self, indicator: Option<Indicator>, spec: SpringSpec) -> bool {
+        let indicator = indicator.filter(|indicator| indicator.is_shown());
+        if indicator == self.indicator {
+            return false;
+        }
+        self.indicator = indicator;
+        self.shown.animate_spec(if indicator.is_some() { 1.0 } else { 0.0 }, spec);
+        let Some(indicator) = indicator else { return true };
+        // Out of sight, it takes its new shape at once, and fades in in it.
+        let fresh = self.shown.value < 0.05;
+        let aim = |spring: &mut Spring, target| {
+            if fresh { spring.set(target) } else { spring.animate_spec(target, spec) }
+        };
+        for (i, (offset, length)) in indicator.pills().into_iter().enumerate() {
+            aim(&mut self.offsets[i], offset);
+            aim(&mut self.lengths[i], length);
+        }
+        aim(&mut self.bright, if indicator.dim { 0.0 } else { 1.0 });
+        true
+    }
+
+    fn pills(&self) -> [(f64, f64); 3] {
+        std::array::from_fn(|i| (self.offsets[i].value, self.lengths[i].value.max(0.0)))
+    }
+
+    fn render(&self, place: &Placement, x: f64, dot_size: f64) {
+        self.layer.setPosition(CGPoint::new(x, place.mark_position.y));
+        self.layer.setOpacity(place.mark_opacity as f32);
+        for (pill, (offset, length)) in self.pills.iter().zip(place.pills) {
+            pill.setBounds(CGRect::new(CGPoint::ZERO, CGSize::new(length, dot_size)));
+            pill.setCornerRadius(dot_size / 2.0);
+            pill.setPosition(CGPoint::new(offset, 0.0));
+        }
+    }
+}
+
 /// One app in the dock, running or pinned or both, or a gap held open for one being dragged
-/// in: its icon, the dot under it, its badge, and the springs that move them.
+/// in: its icon, the mark under it, its badge, and the springs that move them.
 pub struct Tile {
     id: u64,
     pub key: String,
@@ -47,17 +129,15 @@ pub struct Tile {
     /// Opened from the dock and not running yet, so bouncing.
     pub launching: bool,
     icon: Retained<CALayer>,
-    dot: Retained<CALayer>,
+    mark: Mark,
+    /// What the running app is up to, which its mark shows.
+    status: Option<Status>,
     badge: Badge,
     /// 0 to 1 as the tile arrives and back to 0 as it leaves; its slot grows and shrinks with
     /// it, so its neighbours slide over.
     appear: Spring,
     hover: Spring,
     press: Spring,
-    /// 1 while the app is frontmost, which stretches its dot into a bar.
-    active: Spring,
-    /// 1 while the app runs, which shows its dot.
-    running: Spring,
     shift_x: Spring,
     shift_y: Spring,
     bounce: Spring,
@@ -70,34 +150,25 @@ pub struct Tile {
 }
 
 impl Tile {
-    fn springs(&mut self) -> [&mut Spring; 9] {
+    fn springs(&mut self) -> impl Iterator<Item = &mut Spring> {
         [
             &mut self.appear,
             &mut self.hover,
             &mut self.press,
-            &mut self.active,
-            &mut self.running,
             &mut self.shift_x,
             &mut self.shift_y,
             &mut self.bounce,
             &mut self.badge.shown,
         ]
+        .into_iter()
+        .chain(self.mark.springs())
     }
 
     fn is_settled(&self) -> bool {
-        [
-            &self.appear,
-            &self.hover,
-            &self.press,
-            &self.active,
-            &self.running,
-            &self.shift_x,
-            &self.shift_y,
-            &self.bounce,
-            &self.badge.shown,
-        ]
-        .iter()
-        .all(|spring| spring.is_resting())
+        [&self.appear, &self.hover, &self.press, &self.shift_x, &self.shift_y, &self.bounce, &self.badge.shown]
+            .iter()
+            .all(|spring| spring.is_resting())
+            && self.mark.is_settled()
     }
 
     /// In the row and staying there: not a gap, not on its way out.
@@ -114,8 +185,9 @@ impl Tile {
             appear: self.appear.value,
             hover: self.hover.value,
             press: self.press.value,
-            active: self.active.value,
-            running: self.running.value,
+            pills: self.mark.pills(),
+            mark_shown: self.mark.shown.value,
+            mark_bright: self.mark.bright.value,
             shift: (self.shift_x.value, self.shift_y.value),
             bounce: self.bounce.value.max(0.0),
         }
@@ -123,7 +195,7 @@ impl Tile {
 
     fn remove_layers(&self) {
         self.icon.removeFromSuperlayer();
-        self.dot.removeFromSuperlayer();
+        self.mark.layer.removeFromSuperlayer();
     }
 }
 
@@ -281,7 +353,7 @@ impl Surface {
     pub fn apply(&mut self, settings: Settings) {
         let resized = settings.icon_size != self.settings.icon_size;
         self.settings = settings;
-        let a = self.settings.animation;
+        let (a, indicators) = (self.settings.animation, self.settings.indicators);
         self.label_shown.retune(a.label);
         self.label_x.retune(a.label_move);
         self.label_width.retune(a.label_move);
@@ -293,7 +365,10 @@ impl Surface {
         for tile in self.tiles.iter_mut().chain(dragged).chain(self.poofs.iter_mut()) {
             tile.hover.retune(a.hover);
             tile.press.retune(a.press);
-            tile.active.retune(a.active);
+            for spring in tile.mark.springs() {
+                spring.retune(a.marks);
+            }
+            tile.mark.set(tile.status.map(|status| indicators.get(status)), a.marks);
             tile.shift_x.retune(a.slide);
             tile.shift_y.retune(a.slide);
             tile.bounce.retune(a.bounce);
@@ -330,7 +405,9 @@ impl Surface {
             layer.setContentsScale(scale);
         }
         for tile in &self.tiles {
-            tile.dot.setContentsScale(scale);
+            for pill in &tile.mark.pills {
+                pill.setContentsScale(scale);
+            }
         }
     }
 
@@ -339,13 +416,7 @@ impl Surface {
     /// Brings the row in line with `row`: new apps pop in, gone ones shrink away where they
     /// were, and ones that moved slide over from where they were drawn. Without `animated`,
     /// everything jumps to where it's headed.
-    pub fn set_row(
-        &mut self,
-        row: &[Spec],
-        apps: &HashMap<i32, Retained<NSRunningApplication>>,
-        frontmost: Option<i32>,
-        animated: bool,
-    ) {
+    pub fn set_row(&mut self, row: &[Spec], apps: &HashMap<i32, Retained<NSRunningApplication>>, animated: bool) {
         let a = self.settings.animation;
         let order: Vec<u64> = self.tiles.iter().map(|tile| tile.id).collect();
         let mut old: Vec<Option<Tile>> = std::mem::take(&mut self.tiles).into_iter().map(Some).collect();
@@ -366,8 +437,11 @@ impl Surface {
             if let Some(name) = tile.app.as_ref().and_then(|app| app.localizedName()) {
                 tile.name = name.to_string();
             }
-            tile.running.animate(if tile.app.is_some() { 1.0 } else { 0.0 });
-            tile.active.animate(if spec.pid.is_some() && spec.pid == frontmost { 1.0 } else { 0.0 });
+            // Running apps' marks come from set_statuses.
+            if tile.app.is_none() {
+                tile.status = None;
+                tile.mark.set(None, a.marks);
+            }
             tiles.push(tile);
         }
         // Whatever's left keeps its place, after whatever came before it.
@@ -397,7 +471,7 @@ impl Surface {
         }
         if !animated {
             for tile in &mut self.tiles {
-                tile.springs().into_iter().for_each(Spring::settle);
+                tile.springs().for_each(Spring::settle);
             }
             self.remove_departed();
         }
@@ -418,7 +492,7 @@ impl Surface {
             .unwrap_or_default();
         set_icon(&tile.icon, app.as_deref(), spec.path.as_deref(), self.icon_pixels());
         self.root.insertSublayer_below(&tile.icon, Some(&self.label));
-        self.root.insertSublayer_below(&tile.dot, Some(&self.label));
+        self.root.insertSublayer_below(&tile.mark.layer, Some(&self.label));
         tile.appear.animate(1.0);
         tile
     }
@@ -432,9 +506,6 @@ impl Surface {
         icon.setBounds(CGRect::new(CGPoint::ZERO, CGSize::new(size, size)));
         icon.setContentsGravity(unsafe { kCAGravityResizeAspect });
         icon.setMinificationFilter(unsafe { kCAFilterTrilinear });
-        let dot = CALayer::new();
-        dot.setBackgroundColor(Some(&self.white));
-        dot.setContentsScale(self.scale);
         let badge = CALayer::new();
         badge.setBackgroundColor(Some(&self.red));
         badge.setOpacity(0.0);
@@ -456,13 +527,12 @@ impl Surface {
             name: String::new(),
             launching: false,
             icon,
-            dot,
+            mark: Mark::new(a.marks, &self.white, self.scale),
+            status: None,
             badge: Badge { layer: badge, text, label: None, width: 0.0, shown: a.appear.spring(0.0) },
             appear: (if placeholder { a.slide } else { a.appear }).spring(0.0),
             hover: a.hover.spring(0.0),
             press: a.press.spring(0.0),
-            active: a.active.spring(0.0),
-            running: a.active.spring(0.0),
             shift_x: a.slide.spring(0.0).with_epsilon(0.05),
             shift_y: a.slide.spring(0.0).with_epsilon(0.05),
             bounce: a.bounce.spring(0.0).with_epsilon(0.002),
@@ -484,7 +554,7 @@ impl Surface {
         }
         let dragged = self.dragged.as_mut().map(|dragged| &mut dragged.tile);
         for tile in self.tiles.iter_mut().chain(dragged).chain(self.poofs.iter_mut()) {
-            tile.springs().into_iter().for_each(|spring| spring.step(dt));
+            tile.springs().for_each(|spring| spring.step(dt));
         }
         self.remove_departed();
     }
@@ -528,10 +598,7 @@ impl Surface {
             tile.icon.setTransform(CATransform3D::new_scale(place.icon_scale.0, place.icon_scale.1, 1.0));
             let dimmed = if tile.app.as_ref().is_some_and(|app| app.isHidden()) { 0.5 } else { 1.0 };
             tile.icon.setOpacity((place.opacity * dimmed) as f32);
-            tile.dot.setBounds(CGRect::new(CGPoint::ZERO, CGSize::new(place.dot_width, s.dot_size)));
-            tile.dot.setCornerRadius(s.dot_size / 2.0);
-            tile.dot.setPosition(CGPoint::new(place.icon_base.x, place.dot_position.y));
-            tile.dot.setOpacity(place.dot_opacity as f32);
+            tile.mark.render(place, place.icon_base.x, s.dot_size);
             render_badge(&tile.badge, s.icon_size);
         }
 
@@ -549,7 +616,7 @@ impl Surface {
             tile.icon.setPosition(foot);
             tile.icon.setTransform(CATransform3D::new_scale(lift, lift, 1.0));
             tile.icon.setOpacity(if dragged.outside { 0.45 } else { 1.0 });
-            tile.dot.setOpacity(0.0);
+            tile.mark.layer.setOpacity(0.0);
             render_badge(&tile.badge, s.icon_size);
         }
         for tile in &self.poofs {
@@ -559,7 +626,7 @@ impl Surface {
             }
             tile.icon.setTransform(CATransform3D::new_scale(shrink, shrink, 1.0));
             tile.icon.setOpacity((shrink * 0.45) as f32);
-            tile.dot.setOpacity(0.0);
+            tile.mark.layer.setOpacity(0.0);
         }
 
         self.render_label(&placements);
@@ -614,6 +681,28 @@ impl Surface {
     fn tile_mut(&mut self, key: &str) -> Option<&mut Tile> {
         let dragged = self.dragged.as_mut().map(|dragged| &mut dragged.tile);
         self.tiles.iter_mut().chain(dragged).find(|tile| tile.key == key && tile.is_live())
+    }
+
+    /// Marks each running app with what it's up to: `presence` says where each process's
+    /// windows are, and `frontmost` which app is in front. Without `animated`, the marks change
+    /// at once. Returns whether any changed.
+    pub fn set_statuses(&mut self, presence: &HashMap<i32, Presence>, frontmost: Option<i32>, animated: bool) -> bool {
+        let (indicators, spec) = (self.settings.indicators, self.settings.animation.marks);
+        let dragged = self.dragged.as_mut().map(|dragged| &mut dragged.tile);
+        let mut changed = false;
+        for tile in self.tiles.iter_mut().chain(dragged).filter(|tile| tile.is_live()) {
+            tile.status = tile.app.as_ref().map(|app| {
+                let pid = app.processIdentifier();
+                Status::of(presence.get(&pid).copied().unwrap_or_default(), Some(pid) == frontmost, app.isHidden())
+            });
+            if tile.mark.set(tile.status.map(|status| indicators.get(status)), spec) {
+                changed = true;
+                if !animated {
+                    tile.mark.springs().for_each(Spring::settle);
+                }
+            }
+        }
+        changed
     }
 
     /// The running apps' keys and processes.
