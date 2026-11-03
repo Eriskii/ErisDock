@@ -1,5 +1,5 @@
 use std::cell::OnceCell;
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 use std::rc::Weak;
 
 use objc2::rc::Retained;
@@ -13,7 +13,7 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::CGPoint;
 use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
-use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSRect, NSString, NSURL};
+use objc2_foundation::{NSArray, NSMutableArray, NSNumber, NSObject, NSObjectProtocol, NSRect, NSString, NSURL, ns_string};
 use objc2_quartz_core::{CADisplayLink, CALayer};
 
 use crate::dock::Dock;
@@ -181,15 +181,56 @@ impl DockPanel {
         this
     }
 
-    /// Puts the panel back on every space when it isn't on the current one. A window manager can
-    /// pin it to a single space (yabai does when it moves a destroyed space's windows), and the
-    /// window server keeps it there; setting the behavior afresh makes it join every space again.
+    /// Puts the panel back on every space when it isn't on the current one. Something outside
+    /// ErisDock (a window manager, most likely) can leave it listed on a single space while still
+    /// marked as joining all of them, and the window server then shows it there alone. Setting the
+    /// collection behavior again doesn't undo that; adding it to every space does.
     pub fn rejoin_every_space(&self) {
         if !self.isOnActiveSpace() {
-            self.setCollectionBehavior(NSWindowCollectionBehavior::Default);
-            self.setCollectionBehavior(on_every_space());
+            add_to_every_space(self.windowNumber());
         }
     }
+}
+
+type MainConnection = unsafe extern "C" fn() -> i32;
+type CopyDisplaySpaces = unsafe extern "C" fn(i32) -> *mut AnyObject;
+type AddWindowsToSpaces = unsafe extern "C" fn(i32, *const AnyObject, *const AnyObject);
+
+/// A SkyLight function, looked up at run time (AppKit has SkyLight loaded), so a macOS without it
+/// just skips this.
+fn skylight<F>(name: &CStr) -> Option<F> {
+    let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+    // SAFETY: F is the function pointer type the symbol has (see the types above).
+    (!symbol.is_null()).then(|| unsafe { std::mem::transmute_copy::<*mut c_void, F>(&symbol) })
+}
+
+/// Lists `window` on every space of every display, as the window server does for a window that
+/// joins all spaces.
+fn add_to_every_space(window: isize) {
+    let (Some(connection), Some(copy_spaces), Some(add)) = (
+        skylight::<MainConnection>(c"SLSMainConnectionID"),
+        skylight::<CopyDisplaySpaces>(c"SLSCopyManagedDisplaySpaces"),
+        skylight::<AddWindowsToSpaces>(c"SLSAddWindowsToSpaces"),
+    ) else {
+        return;
+    };
+    let cid = unsafe { connection() };
+    // SAFETY: a +1 CFArray of dictionaries, toll-free bridged.
+    let Some(displays) = (unsafe { Retained::from_raw(copy_spaces(cid).cast::<NSArray<AnyObject>>()) }) else {
+        return;
+    };
+    let ids = NSMutableArray::<AnyObject>::new();
+    for display in displays.iter() {
+        let spaces: Option<Retained<NSArray<AnyObject>>> = unsafe { msg_send![&*display, objectForKey: ns_string!("Spaces")] };
+        for space in spaces.iter().flat_map(|spaces| spaces.iter()) {
+            let id: Option<Retained<AnyObject>> = unsafe { msg_send![&*space, objectForKey: ns_string!("ManagedSpaceID")] };
+            if let Some(id) = id {
+                ids.addObject(&id);
+            }
+        }
+    }
+    let windows = NSArray::from_retained_slice(&[Retained::into_super(Retained::into_super(NSNumber::new_isize(window)))]);
+    unsafe { add(cid, Retained::as_ptr(&windows).cast(), Retained::as_ptr(&ids).cast()) };
 }
 
 fn on_every_space() -> NSWindowCollectionBehavior {
