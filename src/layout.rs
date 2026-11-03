@@ -17,6 +17,8 @@ pub struct Motion {
     pub mark_shown: f64,
     /// 1 for a bright mark, 0 for a dim one.
     pub mark_bright: f64,
+    /// 1 for a ring, which is drawn larger so its hole shows.
+    pub mark_ring: f64,
     /// How far the icon is from its slot, sliding back into it after the row is reordered.
     pub shift: (f64, f64),
     /// How high a launching app's icon has bounced, in icon heights.
@@ -38,6 +40,7 @@ pub struct Placement {
     /// The middle of the mark, and its pills' offsets from there and lengths.
     pub mark_position: CGPoint,
     pub pills: [(f64, f64); 3],
+    pub mark_height: f64,
     pub mark_opacity: f64,
     pub opacity: f64,
 }
@@ -82,6 +85,7 @@ pub fn place(
             let size = appear * pinch;
             let grow = size * (1.0 + a.hover_scale * m.hover);
             let fade = appear.min(1.0) * reveal;
+            let dot = s.dot_size * (1.0 + 0.5 * m.mark_ring.clamp(0.0, 1.0));
             let slot_base = CGPoint::new(center, height - s.top_padding - s.icon_size * size);
             Placement {
                 center,
@@ -95,7 +99,8 @@ pub fn place(
                 ),
                 icon_scale: (grow * (1.0 + a.press_scale.0 * m.press), grow * (1.0 + a.press_scale.1 * m.press)),
                 mark_position: CGPoint::new(center, height - s.height() + s.bottom_padding * 0.4),
-                pills: m.pills.map(|(offset, length)| (offset * s.dot_size * pinch, length * s.dot_size * pinch)),
+                pills: m.pills.map(|(offset, length)| (offset * dot * pinch, length * dot * pinch)),
+                mark_height: dot,
                 mark_opacity: fade * m.mark_shown.clamp(0.0, 1.0) * (DIM + (1.0 - DIM) * m.mark_bright.clamp(0.0, 1.0)),
                 opacity: fade,
             }

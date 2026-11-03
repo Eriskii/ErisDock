@@ -136,9 +136,9 @@ pub fn survey(pids: &HashSet<i32>) -> HashMap<i32, Presence> {
         let here = spaces.iter().any(|space| current.contains(space));
         let app: &mut Presence = presence.entry(pid).or_default();
         match (here, minimized) {
-            (true, false) => app.open = true,
-            (true, true) => app.minimized = true,
-            (false, _) => app.elsewhere = true,
+            (true, false) => app.open += 1,
+            (true, true) => app.minimized += 1,
+            (false, _) => app.elsewhere += 1,
         }
     }
     presence
@@ -157,6 +157,10 @@ pub fn print() {
         let here = presence.get(&pid).copied().unwrap_or_default();
         let status = Status::of(here, Some(pid) == frontmost, app.isHidden());
         let name = app.localizedName().map(|name| name.to_string()).unwrap_or_default();
-        println!("{name:24} {:16} {:16} {here:?}", status.key(), indicators.get(status).to_string());
+        println!(
+            "{name:24} {:16} {:16} {here:?}",
+            status.key(),
+            indicators.get(status).for_windows(here.windows(status)).to_string()
+        );
     }
 }

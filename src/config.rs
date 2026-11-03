@@ -71,7 +71,8 @@ animation = "squishy"
 # block_self_pinning = true
 
 # The marks under running apps' icons, by what their windows are doing: "dot", "two-dots",
-# "three-dots", "bar" or "none", with "dim-" in front for a dim one, as in "dim-dot". "Here" is
+# "three-dots", "window-dots" (a dot per window, up to three), "bar" or "none". "dim-" or
+# "accent-" in front picks those colours, and "ring-" a ring, as in "accent-ring-bar". "Here" is
 # the desktop on screen.
 # [indicators]
 # focused = "bar"               # the app in front

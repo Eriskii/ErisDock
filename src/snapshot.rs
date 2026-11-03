@@ -28,6 +28,15 @@ pub fn write(path: &Path, style: Option<Style>) {
     if let Some(style) = style {
         config.animation = style;
     }
+    if let Ok(marks) = std::env::var("ERISDOCK_SNAPSHOT_MARKS") {
+        // Status keys and marks, as in the config: "focused=accent-ring-bar,open=window-dots".
+        for (status, mark) in marks.split(',').filter_map(|pair| pair.split_once('=')) {
+            let status = crate::indicators::Status::ALL.into_iter().find(|each| each.key() == status);
+            if let (Some(status), Ok(mark)) = (status, mark.parse()) {
+                config.indicators.set(status, Some(mark));
+            }
+        }
+    }
     let mut surface = Surface::new(Settings::from_config(&config, Settings::native_icon_size()), SCALE);
     surface.bounds = CGRect::new(CGPoint::ZERO, CGSize::new(640.0, surface.panel_height()));
     surface.root.setFrame(surface.bounds);
@@ -39,9 +48,9 @@ pub fn write(path: &Path, style: Option<Style>) {
     surface.set_row(&row, &apps.by_pid(), false);
     // Every kind of mark, whatever the apps are really up to.
     let made_up = [
-        Presence { open: true, ..Default::default() },
-        Presence { minimized: true, ..Default::default() },
-        Presence { elsewhere: true, ..Default::default() },
+        Presence { open: 2, ..Default::default() },
+        Presence { minimized: 1, ..Default::default() },
+        Presence { elsewhere: 3, ..Default::default() },
         Presence::default(),
     ];
     let pids: Vec<i32> = apps.apps.iter().map(|app| app.processIdentifier()).collect();

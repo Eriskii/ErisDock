@@ -82,9 +82,13 @@ The mark under a running app's icon says what it's up to, taking the first of th
 | Windows only on other desktops | `other_desktops` | dim dot |
 | No windows | `no_windows` | dim dot |
 
-Each can be a dot, two dots, three dots or a bar, bright or dim, or nothing, picked in the
-settings window or in the config's `[indicators]` table (`minimized = "dim-two-dots"`). A mark
-is three pills that slide together and apart, so one turns into another as an app's windows
+Each can be a dot, two dots, three dots, a dot per window (up to three) or a bar; bright, dim or
+in the accent colour from System Settings; filled or a ring; or nothing. They're picked in the
+settings window or in the config's `[indicators]` table, written as the shape with the colour
+and `ring-` in front: `minimized = "dim-two-dots"`, `focused = "accent-ring-bar"`,
+`open = "window-dots"`. A dot per window counts the app's windows on the desktop on screen, or
+for an app only on other desktops, its windows there. A mark is three pills that slide together
+and apart and fade between filled and ring, so one turns into another as an app's windows
 change.
 
 Where windows are comes from the window server, through SkyLight's private calls, which need no

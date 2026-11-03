@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSCompositingOperation, NSFont, NSFontWeightMedium, NSGraphicsContext, NSImage, NSRunningApplication, NSWorkspace,
+    NSColor, NSColorSpace, NSCompositingOperation, NSFont, NSFontWeightMedium, NSGraphicsContext, NSImage,
+    NSRunningApplication, NSWorkspace,
 };
 use objc2_core_foundation::{CFRetained, CFType, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
@@ -17,7 +18,7 @@ use objc2_quartz_core::{
 };
 
 use crate::animation::SpringSpec;
-use crate::indicators::{Indicator, Presence, Status};
+use crate::indicators::{Indicator, Presence, Status, Tone};
 use crate::layout::{self, Motion, Placement};
 use crate::row::{FINDER, Spec};
 use crate::settings::Settings;
@@ -43,16 +44,21 @@ struct Mark {
     lengths: [Spring; 3],
     shown: Spring,
     bright: Spring,
+    /// 0 white, 1 the accent colour.
+    accent: Spring,
+    /// 0 filled, 1 a ring.
+    ring: Spring,
+    /// The colour last drawn: how far to the accent, how far to a ring, and the accent.
+    drawn: Option<(f64, f64, [f64; 3])>,
 }
 
 impl Mark {
-    fn new(spec: SpringSpec, color: &CGColor, scale: f64) -> Self {
+    fn new(spec: SpringSpec, scale: f64) -> Self {
         let layer = CALayer::new();
         // Pills on top of each other fade as one shape, not as layers showing through.
         layer.setAllowsGroupOpacity(true);
         let pills = std::array::from_fn(|_| {
             let pill = CALayer::new();
-            pill.setBackgroundColor(Some(color));
             pill.setContentsScale(scale);
             layer.addSublayer(&pill);
             pill
@@ -65,15 +71,27 @@ impl Mark {
             lengths: std::array::from_fn(|_| spec.spring(1.0)),
             shown: spec.spring(0.0),
             bright: spec.spring(0.0),
+            accent: spec.spring(0.0),
+            ring: spec.spring(0.0),
+            drawn: None,
         }
     }
 
     fn springs(&mut self) -> impl Iterator<Item = &mut Spring> {
-        self.offsets.iter_mut().chain(&mut self.lengths).chain([&mut self.shown, &mut self.bright])
+        self.offsets.iter_mut().chain(&mut self.lengths).chain([
+            &mut self.shown,
+            &mut self.bright,
+            &mut self.accent,
+            &mut self.ring,
+        ])
     }
 
     fn is_settled(&self) -> bool {
-        self.offsets.iter().chain(&self.lengths).chain([&self.shown, &self.bright]).all(Spring::is_resting)
+        self.offsets
+            .iter()
+            .chain(&self.lengths)
+            .chain([&self.shown, &self.bright, &self.accent, &self.ring])
+            .all(Spring::is_resting)
     }
 
     /// Turns into `indicator`, or fades away with none. Returns whether that's a change.
@@ -94,7 +112,9 @@ impl Mark {
             aim(&mut self.offsets[i], offset);
             aim(&mut self.lengths[i], length);
         }
-        aim(&mut self.bright, if indicator.dim { 0.0 } else { 1.0 });
+        aim(&mut self.bright, if indicator.tone == Tone::Dim { 0.0 } else { 1.0 });
+        aim(&mut self.accent, if indicator.tone == Tone::Accent { 1.0 } else { 0.0 });
+        aim(&mut self.ring, if indicator.ring { 1.0 } else { 0.0 });
         true
     }
 
@@ -102,13 +122,27 @@ impl Mark {
         std::array::from_fn(|i| (self.offsets[i].value, self.lengths[i].value.max(0.0)))
     }
 
-    fn render(&self, place: &Placement, x: f64, dot_size: f64) {
+    fn render(&mut self, place: &Placement, x: f64, dot_size: f64, accent: [f64; 3]) {
         self.layer.setPosition(CGPoint::new(x, place.mark_position.y));
         self.layer.setOpacity(place.mark_opacity as f32);
+        let ring = self.ring.value.clamp(0.0, 1.0);
+        let height = place.mark_height;
         for (pill, (offset, length)) in self.pills.iter().zip(place.pills) {
-            pill.setBounds(CGRect::new(CGPoint::ZERO, CGSize::new(length, dot_size)));
-            pill.setCornerRadius(dot_size / 2.0);
+            pill.setBounds(CGRect::new(CGPoint::ZERO, CGSize::new(length.max(height * ring), height)));
+            pill.setCornerRadius(height / 2.0);
             pill.setPosition(CGPoint::new(offset, 0.0));
+            pill.setBorderWidth(ring * (dot_size * 0.3).max(1.0));
+        }
+        // Colours change only while the mark turns to or from the accent or a ring.
+        let look = (self.accent.value.clamp(0.0, 1.0), ring, accent);
+        if self.drawn != Some(look) {
+            let [r, g, b] = accent.map(|channel| 1.0 + (channel - 1.0) * look.0);
+            let (edge, fill) = (CGColor::new_srgb(r, g, b, 1.0), CGColor::new_srgb(r, g, b, 1.0 - ring));
+            for pill in &self.pills {
+                pill.setBorderColor(Some(&edge));
+                pill.setBackgroundColor(Some(&fill));
+            }
+            self.drawn = Some(look);
         }
     }
 }
@@ -130,8 +164,9 @@ pub struct Tile {
     pub launching: bool,
     icon: Retained<CALayer>,
     mark: Mark,
-    /// What the running app is up to, which its mark shows.
-    status: Option<Status>,
+    /// What the running app is up to, which its mark shows, and how many windows its mark
+    /// counts.
+    status: Option<(Status, usize)>,
     badge: Badge,
     /// 0 to 1 as the tile arrives and back to 0 as it leaves; its slot grows and shrinks with
     /// it, so its neighbours slide over.
@@ -188,6 +223,7 @@ impl Tile {
             pills: self.mark.pills(),
             mark_shown: self.mark.shown.value,
             mark_bright: self.mark.bright.value,
+            mark_ring: self.mark.ring.value,
             shift: (self.shift_x.value, self.shift_y.value),
             bounce: self.bounce.value.max(0.0),
         }
@@ -248,6 +284,8 @@ pub struct Surface {
     label_width: Spring,
     white: CFRetained<CGColor>,
     red: CFRetained<CGColor>,
+    /// The accent colour, in sRGB.
+    accent: [f64; 3],
 }
 
 impl Surface {
@@ -298,6 +336,7 @@ impl Surface {
             label_name: String::new(),
             white,
             red: CGColor::new_srgb(1.0, 0.231, 0.188, 1.0),
+            accent: accent_color(),
         };
         surface.set_scale(scale);
         surface
@@ -368,7 +407,7 @@ impl Surface {
             for spring in tile.mark.springs() {
                 spring.retune(a.marks);
             }
-            tile.mark.set(tile.status.map(|status| indicators.get(status)), a.marks);
+            tile.mark.set(tile.status.map(|(status, windows)| indicators.get(status).for_windows(windows)), a.marks);
             tile.shift_x.retune(a.slide);
             tile.shift_y.retune(a.slide);
             tile.bounce.retune(a.bounce);
@@ -527,7 +566,7 @@ impl Surface {
             name: String::new(),
             launching: false,
             icon,
-            mark: Mark::new(a.marks, &self.white, self.scale),
+            mark: Mark::new(a.marks, self.scale),
             status: None,
             badge: Badge { layer: badge, text, label: None, width: 0.0, shown: a.appear.spring(0.0) },
             appear: (if placeholder { a.slide } else { a.appear }).spring(0.0),
@@ -585,7 +624,7 @@ impl Surface {
         self.body.setFrame(self.bounds);
         self.body.setPath(Some(&path));
         self.body.setShadowPath(Some(&path));
-        let s = &self.settings;
+        let (s, accent) = (&self.settings, self.accent);
         for (tile, place) in self.tiles.iter_mut().zip(&placements) {
             tile.center = place.center;
             tile.hit = place.hit;
@@ -598,7 +637,7 @@ impl Surface {
             tile.icon.setTransform(CATransform3D::new_scale(place.icon_scale.0, place.icon_scale.1, 1.0));
             let dimmed = if tile.app.as_ref().is_some_and(|app| app.isHidden()) { 0.5 } else { 1.0 };
             tile.icon.setOpacity((place.opacity * dimmed) as f32);
-            tile.mark.render(place, place.icon_base.x, s.dot_size);
+            tile.mark.render(place, place.icon_base.x, s.dot_size, accent);
             render_badge(&tile.badge, s.icon_size);
         }
 
@@ -688,14 +727,18 @@ impl Surface {
     /// at once. Returns whether any changed.
     pub fn set_statuses(&mut self, presence: &HashMap<i32, Presence>, frontmost: Option<i32>, animated: bool) -> bool {
         let (indicators, spec) = (self.settings.indicators, self.settings.animation.marks);
+        self.accent = accent_color();
         let dragged = self.dragged.as_mut().map(|dragged| &mut dragged.tile);
         let mut changed = false;
         for tile in self.tiles.iter_mut().chain(dragged).filter(|tile| tile.is_live()) {
             tile.status = tile.app.as_ref().map(|app| {
                 let pid = app.processIdentifier();
-                Status::of(presence.get(&pid).copied().unwrap_or_default(), Some(pid) == frontmost, app.isHidden())
+                let presence = presence.get(&pid).copied().unwrap_or_default();
+                let status = Status::of(presence, Some(pid) == frontmost, app.isHidden());
+                (status, presence.windows(status))
             });
-            if tile.mark.set(tile.status.map(|status| indicators.get(status)), spec) {
+            let mark = tile.status.map(|(status, windows)| indicators.get(status).for_windows(windows));
+            if tile.mark.set(mark, spec) {
                 changed = true;
                 if !animated {
                     tile.mark.springs().for_each(Spring::settle);
@@ -1023,4 +1066,11 @@ fn rasterize(image: &NSImage, side: usize) -> Option<CFRetained<CGImage>> {
     image.drawInRect_fromRect_operation_fraction(rect, NSRect::ZERO, NSCompositingOperation::Copy, 1.0);
     NSGraphicsContext::restoreGraphicsState_class();
     CGBitmapContextCreateImage(Some(&context))
+}
+
+/// The accent colour picked in System Settings, in sRGB.
+fn accent_color() -> [f64; 3] {
+    NSColor::controlAccentColor()
+        .colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())
+        .map_or([0.0, 0.48, 1.0], |color| [color.redComponent(), color.greenComponent(), color.blueComponent()])
 }

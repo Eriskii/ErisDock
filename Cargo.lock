@@ -463,3 +463,11 @@ version = "0.3.0"
 [[patch.unused]]
 name = "erisoverlaynetwork"
 version = "0.3.0"
+
+[[patch.unused]]
+name = "eris-inject"
+version = "0.1.2"
+
+[[patch.unused]]
+name = "eris-inject-payload"
+version = "0.1.2"
