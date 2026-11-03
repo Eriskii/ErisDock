@@ -172,12 +172,7 @@ impl DockPanel {
         this.setBackgroundColor(Some(&NSColor::clearColor()));
         this.setHasShadow(false);
         this.setLevel(CGWindowLevelForKey(CGWindowLevelKey::DockWindowLevelKey) as isize);
-        this.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::Stationary
-                | NSWindowCollectionBehavior::IgnoresCycle
-                | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        );
+        this.setCollectionBehavior(on_every_space());
         this.setMovable(false);
         this.setHidesOnDeactivate(false);
         this.setAnimationBehavior(NSWindowAnimationBehavior::None);
@@ -185,6 +180,23 @@ impl DockPanel {
         this.setContentView(Some(view));
         this
     }
+
+    /// Puts the panel back on every space when it isn't on the current one. A window manager can
+    /// pin it to a single space (yabai does when it moves a destroyed space's windows), and the
+    /// window server keeps it there; setting the behavior afresh makes it join every space again.
+    pub fn rejoin_every_space(&self) {
+        if !self.isOnActiveSpace() {
+            self.setCollectionBehavior(NSWindowCollectionBehavior::Default);
+            self.setCollectionBehavior(on_every_space());
+        }
+    }
+}
+
+fn on_every_space() -> NSWindowCollectionBehavior {
+    NSWindowCollectionBehavior::CanJoinAllSpaces
+        | NSWindowCollectionBehavior::Stationary
+        | NSWindowCollectionBehavior::IgnoresCycle
+        | NSWindowCollectionBehavior::FullScreenAuxiliary
 }
 
 define_class!(

@@ -154,7 +154,7 @@ impl Dock {
         observers.push(self.observe(
             &workspace.notificationCenter(),
             unsafe { NSWorkspaceActiveSpaceDidChangeNotification },
-            Dock::windows_changed,
+            Dock::space_changed,
         ));
         observers.push(self.observe(
             &NSNotificationCenter::defaultCenter(),
@@ -331,6 +331,7 @@ impl Dock {
             // Rising from out of sight, it shows how things are now rather than catching up.
             update_statuses(&mut surface, self.panel.isVisible());
         }
+        self.panel.rejoin_every_space();
         self.panel.orderFrontRegardless();
         self.animate();
         self.pointer_moved();
@@ -462,6 +463,11 @@ impl Dock {
 
     /// Brings the marks under the icons up to date, after windows may have moved, been
     /// minimized or closed.
+    fn space_changed(&self) {
+        self.panel.rejoin_every_space();
+        self.windows_changed();
+    }
+
     fn windows_changed(&self) {
         let Ok(mut surface) = self.surface.try_borrow_mut() else { return self.later(Dock::windows_changed) };
         if update_statuses(&mut surface, self.panel.isVisible()) {
